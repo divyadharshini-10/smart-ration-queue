@@ -114,6 +114,11 @@ function App() {
   >({});
   const [distributionMessage, setDistributionMessage] = useState('');
   const [distributionSubmitting, setDistributionSubmitting] = useState(false);
+  const [paymentMethod, setPaymentMethod] =
+    useState<'cash' | 'upi'>('cash');
+  const [receipt, setReceipt] = useState<any>(null);
+  const [itemPrices, setItemPrices] =
+    useState<Record<string, number>>({});
 
   const today = new Date().toLocaleDateString('en-CA');
 
@@ -225,6 +230,24 @@ function App() {
     localStorage.setItem('ration-shops', JSON.stringify(shops));
   }, [shops]);
 
+  async function loadItemPrices() {
+    const { data, error } = await supabase
+      .from('ration_item_prices')
+      .select('item_name, price_per_kg');
+
+    if (error) {
+      console.error('Could not load item prices:', error.message);
+      return;
+    }
+
+    const prices: Record<string, number> = {};
+    for (const item of data ?? []) {
+      prices[item.item_name] = Number(item.price_per_kg);
+    }
+
+    setItemPrices(prices);
+  }
+
   async function loadStock() {
     const { data: shopData, error: shopError } = await supabase
       .from('shops')
@@ -303,6 +326,7 @@ function App() {
       }
     }
     void initialLoad();
+    void loadItemPrices();
     return () => { cancelled = true; };
   }, []);
 
@@ -545,23 +569,24 @@ function App() {
 
     try {
       const { data, error } = await supabase.rpc(
-        'confirm_ration_distribution',
+        'confirm_distribution_with_receipt',
         {
           p_token_code: scannedTokenCode,
           p_items: items,
+          p_payment_method: paymentMethod,
         }
       );
 
       if (error) throw error;
-
       if (!data?.success) {
         throw new Error(data?.message ?? 'Distribution failed.');
       }
 
+      setReceipt(data);
       setDistributionMessage(
-        `Success! ${data.total_kg} kg distributed. ` +
-        `${data.items_issued} item(s) recorded.`
+        `Receipt ${data.receipt_code} created. Total ₹${Number(data.total_amount).toFixed(2)}. Payment: ${data.payment_status}.`
       );
+
       setScanResult(`Token ${scannedTokenCode} redeemed successfully.`);
       setScannedTokenCode('');
       setDistributionItems({});
@@ -825,6 +850,15 @@ function App() {
 
   if (loggedIn && selectedRole === 'dealer') {
     const dealerShops = shops.filter((shop) => shop.id === assignedShopCode);
+    const distributionTotal = Object.entries(distributionItems)
+      .reduce((total, [itemName, value]) => {
+        const quantity = Number(value);
+        if (!value.trim() || !Number.isFinite(quantity) || quantity <= 0) {
+          return total;
+        }
+
+        return total + quantity * (itemPrices[itemName] ?? 0);
+      }, 0);
     return (
       <main style={pageStyle}>
         <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -899,6 +933,52 @@ function App() {
                 );
               })}
 
+              <h3>Distribution bill</h3>
+
+              {['Rice', 'Sugar', 'Wheat', 'Oil'].map((item) => {
+                const quantity = Number(distributionItems[item] ?? 0);
+                const price = itemPrices[item] ?? 0;
+
+                return (
+                  <p key={item}>
+                    {item}: ₹{price.toFixed(2)}/kg
+                    {' × '}
+                    {quantity} kg = ₹{(quantity * price).toFixed(2)}
+                  </p>
+                );
+              })}
+
+              <h3>Total: ₹{distributionTotal.toFixed(2)}</h3>
+
+              <label htmlFor="payment-method">Payment method</label>
+
+              <select
+                id="payment-method"
+                style={inputStyle}
+                value={paymentMethod}
+                onChange={(event) =>
+                  setPaymentMethod(event.target.value as 'cash' | 'upi')
+                }
+              >
+                <option value="cash">Cash</option>
+                <option value="upi">UPI (demo)</option>
+              </select>
+
+              {paymentMethod === 'upi' && (
+                <div style={{ textAlign: 'center', padding: 16 }}>
+                  <h3>Demo UPI Payment</h3>
+                  <p>Amount: ₹{distributionTotal.toFixed(2)}</p>
+                  <QRCodeSVG
+                    value={`SMART-RATION-DEMO|TOKEN:${scannedTokenCode}|AMOUNT:${distributionTotal.toFixed(2)}`}
+                    size={180}
+                    level="M"
+                  />
+                  <p>
+                    Demo QR for presentation only. No real payment is processed.
+                  </p>
+                </div>
+              )}
+
               <button
                 type="button"
                 style={buttonStyle}
@@ -927,6 +1007,36 @@ function App() {
             </div>
           )}
         </section>
+
+        {receipt && (
+          <section style={{ ...cardStyle, marginTop: 20 }}>
+            <div id="ration-receipt">
+              <h2>Smart Ration Queue</h2>
+              <h3>Ration Distribution Receipt</h3>
+
+              <p><strong>Receipt:</strong> {receipt.receipt_code}</p>
+              <p><strong>Token:</strong> {receipt.token_code}</p>
+              <p>
+                <strong>Payment:</strong> {receipt.payment_method.toUpperCase()}
+              </p>
+              <p>
+                <strong>Status:</strong> {receipt.payment_status === 'paid'
+                  ? 'Paid (demo)'
+                  : 'UPI pending — demo only'}
+              </p>
+              <h3>Total: ₹{Number(receipt.total_amount).toFixed(2)}</h3>
+              <p>Thank you. Please keep this receipt for your records.</p>
+            </div>
+
+            <button
+              type="button"
+              style={buttonStyle}
+              onClick={() => window.print()}
+            >
+              Print Receipt
+            </button>
+          </section>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 20, marginTop: 24 }}>
           {dealerShops.length === 0 ? (
@@ -1500,4 +1610,4 @@ function OfficialComplaintCard({
   );
 }
 
-export default App;                                              
+export default App;
