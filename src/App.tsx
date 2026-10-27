@@ -254,6 +254,8 @@ function App() {
   }, [shops]);
 
   async function loadTokenFamilyMembers(tokenCode: string) {
+    console.log('[Family] Loading started:', tokenCode);
+
     setFamilyMembers([]);
     setSelectedFamilyMemberId('');
     setFamilyMembersLoading(true);
@@ -264,27 +266,38 @@ function App() {
         { p_token_code: tokenCode.trim() }
       );
 
+      console.log('[Family] RPC data:', data);
+      console.log('[Family] RPC error:', error);
+
       if (error) throw error;
 
       const members = Array.isArray(data)
         ? (data as FamilyMember[])
         : [];
 
+      console.log('[Family] Member count:', members.length);
+
       setFamilyMembers(members);
 
       if (members.length === 0) {
         setDistributionMessage(
-          'No family members were found for this token. Check the household records.'
+          'No family members returned by Supabase for this token.'
+        );
+      } else {
+        setDistributionMessage(
+          `${members.length} family member(s) loaded successfully.`
         );
       }
     } catch (error) {
-      console.error('Could not load family members:', error);
+      console.error('[Family] Loading failed:', error);
+
       setDistributionMessage(
         error instanceof Error
           ? `Could not load family members: ${error.message}`
           : 'Could not load family members.'
       );
     } finally {
+      console.log('[Family] Loading finished');
       setFamilyMembersLoading(false);
     }
   }
