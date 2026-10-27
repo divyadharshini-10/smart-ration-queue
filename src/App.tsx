@@ -23,6 +23,14 @@ function getStockStatus(quantity: number) {
   return 'In stock';
 }
 
+// Items handed out at distribution time, in display order.
+const distributionItemNames = ['Rice', 'Sugar', 'Wheat', 'Toor dal', 'Oil'];
+
+// Oil is measured in litres; every other item is measured in kg.
+function getUnit(itemName: string) {
+  return itemName === 'Oil' ? 'litre' : 'kg';
+}
+
 const initialShops: Shop[] = [
   {
     id: '001', name: 'Demo Fair Price Shop 001', village: 'Greenfield',
@@ -117,6 +125,8 @@ function App() {
   const [paymentMethod, setPaymentMethod] =
     useState<'cash' | 'upi'>('cash');
   const [receipt, setReceipt] = useState<any>(null);
+  // Preview-only mode is enabled by default and never calls a Supabase redemption RPC.
+  const [previewOnlyMode, setPreviewOnlyMode] = useState(true);
   const [itemPrices, setItemPrices] =
     useState<Record<string, number>>({});
 
@@ -564,6 +574,35 @@ function App() {
       return;
     }
 
+    // This branch is intentionally local-only: no token lookup, redemption, stock update,
+    // monthly-usage update, or receipt insert is performed in preview-only mode.
+    if (previewOnlyMode) {
+      const lineItems = items.map((item) => {
+        const unitPrice = item.item_name === 'Oil' ? 25 : 0;
+        return {
+          item_name: item.item_name,
+          quantity_kg: item.quantity_kg,
+          price_per_kg: unitPrice,
+          line_total: item.quantity_kg * unitPrice,
+        };
+      });
+      const total = lineItems.reduce((sum, item) => sum + item.line_total, 0);
+      const sampleReceipt = {
+        success: true,
+        preview_only: true,
+        receipt_code: `SAMPLE-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`,
+        token_code: scannedTokenCode,
+        payment_method: paymentMethod,
+        payment_status: 'sample_only',
+        total_amount: total,
+        items: lineItems,
+        created_at: new Date().toISOString(),
+      };
+      setReceipt(sampleReceipt);
+      setDistributionMessage(`SAMPLE receipt created locally. Total ₹${total.toFixed(2)}. No token was redeemed and no stock was changed.`);
+      return;
+    }
+
     setDistributionSubmitting(true);
     setDistributionMessage('Recording distribution...');
 
@@ -861,6 +900,7 @@ function App() {
       }, 0);
     return (
       <main style={pageStyle}>
+        <style>{`@media print { body * { visibility: hidden !important; } #ration-receipt, #ration-receipt * { visibility: visible !important; } #ration-receipt { position: absolute; left: 0; top: 0; width: 100%; padding: 20px; box-sizing: border-box; color: #111827; background: white; } }`}</style>
         <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div>
             <h1>RATION DEALER DASHBOARD</h1>
@@ -872,9 +912,41 @@ function App() {
         </header>
 
         <section style={{ ...cardStyle, marginTop: 24 }}>
-          <h2>Scan Consumer QR Token</h2>
-          <p>Scan the QR code displayed on the consumer's active ration token to verify it.</p>
-          {!scannerOpen ? (
+          <h2>Dealer QR / Distribution Test</h2>
+          <div style={{ padding: 14, borderRadius: 10, background: previewOnlyMode ? '#fff7ed' : '#fef2f2', border: `1px solid ${previewOnlyMode ? '#fdba74' : '#fca5a5'}`, marginBottom: 14 }}>
+            <strong>{previewOnlyMode ? 'PREVIEW-ONLY MODE — SAFE LOCAL TEST' : 'LIVE DISTRIBUTION MODE'}</strong>
+            <p style={{ marginBottom: 8 }}>{previewOnlyMode
+              ? 'The Confirm button creates a sample receipt in this browser only. It does not call Supabase or redeem tokens, update stock, or write receipt records.'
+              : 'Live mode can redeem tokens and change database stock/usage. Use only when intentionally processing a real distribution.'}</p>
+            <button type="button" style={{ ...buttonStyle, background: previewOnlyMode ? '#9a3412' : '#991b1b' }} onClick={() => {
+              const next = !previewOnlyMode;
+              if (next) {
+                setPreviewOnlyMode(true);
+                setReceipt(null);
+                setScannedTokenCode('');
+                setDistributionItems({});
+                setDistributionMessage('Preview-only mode enabled. Use the sample token button below.');
+              } else if (window.confirm('Switch to LIVE distribution mode? Confirming distribution can redeem a token and update Supabase stock and usage. Continue only if you intend to process real distributions.')) {
+                setPreviewOnlyMode(false);
+                setReceipt(null);
+                setScannedTokenCode('');
+                setDistributionItems({});
+                setDistributionMessage('Live mode enabled. Be careful: confirmation writes to Supabase.');
+              }
+            }}>{previewOnlyMode ? 'Switch to live mode…' : 'Return to preview-only mode'}</button>
+          </div>
+          {previewOnlyMode && (
+            <button type="button" style={{ ...buttonStyle, background: '#9a3412', marginBottom: 12 }} onClick={() => {
+              setScannerOpen(false);
+              setScanResult('Sample token loaded locally. No database lookup was performed.');
+              setScannedTokenCode('SAMPLE-TOKEN-001');
+              setDistributionItems({ Rice: '10', Sugar: '5', Wheat: '5', 'Toor dal': '2', Oil: '1.5' });
+              setReceipt(null);
+              setDistributionMessage('Edit quantities if needed, then create a sample receipt. Nothing will be redeemed.');
+            }}>Load sample token + quantities</button>
+          )}
+          {!previewOnlyMode && <p>Scan the QR code displayed on the consumer's active ration token to verify it.</p>}
+          {!previewOnlyMode && (!scannerOpen ? (
             <button
               type="button"
               style={buttonStyle}
@@ -893,7 +965,7 @@ function App() {
                 Close Scanner
               </button>
             </div>
-          )}
+          ))}
           {scanResult && (
             <p role="status" aria-live="polite" style={{ marginTop: 12, overflowWrap: 'anywhere' }}>
               {scanResult}
@@ -906,13 +978,14 @@ function App() {
               <p>Verified token: <strong>{scannedTokenCode}</strong></p>
               <p>Enter only the quantities actually handed to the consumer.</p>
 
-              {['Rice', 'Sugar', 'Wheat', 'Oil'].map((item) => {
+              {distributionItemNames.map((item) => {
                 const available =
                   dealerShops[0]?.stock.find((stock) => stock.name === item)?.quantity ?? 0;
+                const unit = getUnit(item);
 
                 return (
                   <div key={item} style={{ marginBottom: 12 }}>
-                    <label htmlFor={`issue-${item}`}>{item} (available: {available} kg)</label>
+                    <label htmlFor={`issue-${item}`}>{item} (available: {available} {unit})</label>
                     <input
                       id={`issue-${item}`}
                       type="number"
@@ -921,7 +994,7 @@ function App() {
                       step="0.01"
                       style={inputStyle}
                       value={distributionItems[item] ?? ''}
-                      placeholder="Quantity to issue in kg"
+                      placeholder={`Quantity to issue in ${unit}`}
                       onChange={(event) =>
                         setDistributionItems((current) => ({
                           ...current,
@@ -935,15 +1008,16 @@ function App() {
 
               <h3>Distribution bill</h3>
 
-              {['Rice', 'Sugar', 'Wheat', 'Oil'].map((item) => {
+              {distributionItemNames.map((item) => {
                 const quantity = Number(distributionItems[item] ?? 0);
                 const price = itemPrices[item] ?? 0;
+                const unit = getUnit(item);
 
                 return (
                   <p key={item}>
-                    {item}: ₹{price.toFixed(2)}/kg
+                    {item}: ₹{price.toFixed(2)}/{unit}
                     {' × '}
-                    {quantity} kg = ₹{(quantity * price).toFixed(2)}
+                    {quantity} {unit} = ₹{(quantity * price).toFixed(2)}
                   </p>
                 );
               })}
@@ -1011,8 +1085,9 @@ function App() {
         {receipt && (
           <section style={{ ...cardStyle, marginTop: 20 }}>
             <div id="ration-receipt">
+              {receipt.preview_only && <div style={{ border: '3px dashed #c2410c', color: '#c2410c', padding: 10, textAlign: 'center', fontWeight: 800, fontSize: 18, marginBottom: 14 }}>SAMPLE ONLY — NOT A REAL DISTRIBUTION RECEIPT</div>}
               <h2>Smart Ration Queue</h2>
-              <h3>Ration Distribution Receipt</h3>
+              <h3>{receipt.preview_only ? 'Sample Ration Receipt (Preview Only)' : 'Ration Distribution Receipt'}</h3>
 
               <p><strong>Receipt:</strong> {receipt.receipt_code}</p>
               <p><strong>Token:</strong> {receipt.token_code}</p>
@@ -1024,7 +1099,14 @@ function App() {
                   ? 'Paid (demo)'
                   : 'UPI pending — demo only'}
               </p>
+              {Array.isArray(receipt.items) && (
+                <table style={{ width: '100%', borderCollapse: 'collapse', margin: '16px 0' }}>
+                  <thead><tr><th style={{ textAlign: 'left', borderBottom: '1px solid #cbd5e1', padding: 8 }}>Item</th><th style={{ textAlign: 'right', borderBottom: '1px solid #cbd5e1', padding: 8 }}>Quantity</th><th style={{ textAlign: 'right', borderBottom: '1px solid #cbd5e1', padding: 8 }}>Rate</th><th style={{ textAlign: 'right', borderBottom: '1px solid #cbd5e1', padding: 8 }}>Amount</th></tr></thead>
+                  <tbody>{receipt.items.map((item: any) => <tr key={item.item_name}><td style={{ padding: 8, borderBottom: '1px solid #e2e8f0' }}>{item.item_name}</td><td style={{ padding: 8, textAlign: 'right', borderBottom: '1px solid #e2e8f0' }}>{item.quantity_kg} {getUnit(item.item_name)}</td><td style={{ padding: 8, textAlign: 'right', borderBottom: '1px solid #e2e8f0' }}>₹{Number(item.price_per_kg).toFixed(2)}/{getUnit(item.item_name)}</td><td style={{ padding: 8, textAlign: 'right', borderBottom: '1px solid #e2e8f0' }}>₹{Number(item.line_total ?? (item.quantity_kg * item.price_per_kg)).toFixed(2)}</td></tr>)}</tbody>
+                </table>
+              )}
               <h3>Total: ₹{Number(receipt.total_amount).toFixed(2)}</h3>
+              {receipt.preview_only && <p><strong>Safety:</strong> This sample was generated in browser memory only. No Supabase RPC was called; no token, stock, usage, or receipt record was changed.</p>}
               <p>Thank you. Please keep this receipt for your records.</p>
             </div>
 
@@ -1033,7 +1115,7 @@ function App() {
               style={buttonStyle}
               onClick={() => window.print()}
             >
-              Print Receipt
+              {receipt.preview_only ? 'Print Sample Receipt' : 'Print Receipt'}
             </button>
           </section>
         )}
@@ -1064,7 +1146,7 @@ function App() {
                         onChange={(event) => updateStock(shop.id, item.name, event.target.value)}
                         style={{ ...inputStyle, width: 110, margin: 0 }}
                       />
-                      <span>kg</span>
+                      <span>{getUnit(item.name)}</span>
                       <button
                         type="button"
                         disabled={savingStockKey === key}
@@ -1163,7 +1245,7 @@ function App() {
               >
                 <strong>{item.level}</strong>
                 <p>{item.shop_name} ({item.shop_code})</p>
-                <p>{item.item_name}: {item.quantity_kg} kg</p>
+                <p>{item.item_name}: {item.quantity_kg} {getUnit(item.item_name)}</p>
               </div>
             ))
           )}
@@ -1179,7 +1261,7 @@ function App() {
                 style={{ ...cardStyle, marginTop: 12 }}
               >
                 <p><strong>{item.shop_name}</strong> ({item.shop_code})</p>
-                <p>{item.item_name}: {item.quantity_kg} kg</p>
+                <p>{item.item_name}: {item.quantity_kg} {getUnit(item.item_name)}</p>
                 <p>{new Date(item.issued_at).toLocaleString()}</p>
               </div>
             ))
@@ -1222,7 +1304,7 @@ function App() {
           {shops.map((shop) => (
             <section key={shop.id} style={cardStyle}>
               <h2>{shop.name}</h2><p>{shop.village}</p>
-              <ul>{shop.stock.map((item) => <li key={item.name}>{item.name}: {item.quantity} kg — {getStockStatus(item.quantity)}</li>)}</ul>
+              <ul>{shop.stock.map((item) => <li key={item.name}>{item.name}: {item.quantity} {getUnit(item.name)} — {getStockStatus(item.quantity)}</li>)}</ul>
             </section>
           ))}
         </div>
@@ -1387,7 +1469,7 @@ function App() {
               {shop.stock.map((item) => (
                 <div key={item.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '8px 0', borderTop: '1px solid #e2e8f0' }}>
                   <span>{item.name}</span>
-                  <span style={{ textAlign: 'right' }}><strong>{item.quantity} kg</strong><br /><small>{getStockStatus(item.quantity)}</small></span>
+                  <span style={{ textAlign: 'right' }}><strong>{item.quantity} {getUnit(item.name)}</strong><br /><small>{getStockStatus(item.quantity)}</small></span>
                 </div>
               ))}
               <button style={{ ...buttonStyle, width: '100%', marginTop: 12 }} onClick={() => {
