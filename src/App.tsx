@@ -713,6 +713,7 @@ function App() {
       setFamilyMembers([]);
 
       await loadStock();
+      setScannerOpen(true);
     } catch (error) {
       setDistributionMessage(
         error instanceof Error
