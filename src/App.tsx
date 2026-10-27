@@ -131,7 +131,7 @@ function App() {
     useState<'cash' | 'upi'>('cash');
   const [receipt, setReceipt] = useState<any>(null);
   // Preview-only mode is enabled by default and never calls a Supabase redemption RPC.
-  const [previewOnlyMode, setPreviewOnlyMode] = useState(true);
+  const [previewOnlyMode, setPreviewOnlyMode] = useState(false);
   const [itemPrices, setItemPrices] =
     useState<Record<string, number>>({});
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
@@ -313,9 +313,14 @@ function App() {
     }
 
     const prices: Record<string, number> = {};
+
     for (const item of data ?? []) {
       prices[item.item_name] = Number(item.price_per_kg);
     }
+
+    // Rice and wheat are always free.
+    prices['Rice'] = 0;
+    prices['Wheat'] = 0;
 
     setItemPrices(prices);
   }
