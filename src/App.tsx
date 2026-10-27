@@ -16,6 +16,11 @@ type Shop = {
   stock: StockItem[];
 };
 type Token = { number: string; shopName: string; date: string; slot: string };
+type FamilyMember = {
+  id: string;
+  full_name: string;
+  relationship: string;
+};
 
 function getStockStatus(quantity: number) {
   if (quantity === 0) return 'Out of stock';
@@ -129,6 +134,9 @@ function App() {
   const [previewOnlyMode, setPreviewOnlyMode] = useState(true);
   const [itemPrices, setItemPrices] =
     useState<Record<string, number>>({});
+  const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
+  const [selectedFamilyMemberId, setSelectedFamilyMemberId] = useState('');
+  const [familyMembersLoading, setFamilyMembersLoading] = useState(false);
 
   const today = new Date().toLocaleDateString('en-CA');
 
@@ -186,10 +194,15 @@ function App() {
           return;
         }
 
-        setScannedTokenCode(result.token_code ?? tokenCode.trim());
+        const verifiedCode = result.token_code ?? tokenCode.trim();
+
+        setScannedTokenCode(verifiedCode);
         setDistributionItems({});
         setDistributionMessage('');
+        setReceipt(null);
         setScanResult(result.message ?? 'Token verified successfully.');
+
+        await loadTokenFamilyMembers(verifiedCode);
       } catch (error) {
         setScannedTokenCode('');
         setScanResult(
@@ -239,6 +252,42 @@ function App() {
   useEffect(() => {
     localStorage.setItem('ration-shops', JSON.stringify(shops));
   }, [shops]);
+
+  async function loadTokenFamilyMembers(tokenCode: string) {
+    setFamilyMembers([]);
+    setSelectedFamilyMemberId('');
+    setFamilyMembersLoading(true);
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'get_token_family_members',
+        { p_token_code: tokenCode.trim() }
+      );
+
+      if (error) throw error;
+
+      const members = Array.isArray(data)
+        ? (data as FamilyMember[])
+        : [];
+
+      setFamilyMembers(members);
+
+      if (members.length === 0) {
+        setDistributionMessage(
+          'No family members were found for this token. Check the household records.'
+        );
+      }
+    } catch (error) {
+      console.error('Could not load family members:', error);
+      setDistributionMessage(
+        error instanceof Error
+          ? `Could not load family members: ${error.message}`
+          : 'Could not load family members.'
+      );
+    } finally {
+      setFamilyMembersLoading(false);
+    }
+  }
 
   async function loadItemPrices() {
     const { data, error } = await supabase
@@ -553,6 +602,13 @@ function App() {
       return;
     }
 
+    if (!selectedFamilyMemberId) {
+      setDistributionMessage(
+        'Please select the family member collecting the ration.'
+      );
+      return;
+    }
+
     const items = Object.entries(distributionItems)
       .filter(([, value]) => value.trim() !== '')
       .map(([item_name, value]) => ({
@@ -592,6 +648,11 @@ function App() {
         preview_only: true,
         receipt_code: `SAMPLE-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`,
         token_code: scannedTokenCode,
+        collected_by_member_id: selectedFamilyMemberId,
+        collected_by_member_name:
+          familyMembers.find(
+            (member) => member.id === selectedFamilyMemberId
+          )?.full_name ?? 'Demo family member',
         payment_method: paymentMethod,
         payment_status: 'sample_only',
         total_amount: total,
@@ -613,6 +674,7 @@ function App() {
           p_token_code: scannedTokenCode,
           p_items: items,
           p_payment_method: paymentMethod,
+          p_collected_by_member_id: selectedFamilyMemberId,
         }
       );
 
@@ -629,6 +691,8 @@ function App() {
       setScanResult(`Token ${scannedTokenCode} redeemed successfully.`);
       setScannedTokenCode('');
       setDistributionItems({});
+      setSelectedFamilyMemberId('');
+      setFamilyMembers([]);
 
       await loadStock();
     } catch (error) {
@@ -940,6 +1004,19 @@ function App() {
               setScannerOpen(false);
               setScanResult('Sample token loaded locally. No database lookup was performed.');
               setScannedTokenCode('SAMPLE-TOKEN-001');
+              setFamilyMembers([
+                {
+                  id: 'demo-member-1',
+                  full_name: 'Demo Family Member',
+                  relationship: 'Head of family',
+                },
+                {
+                  id: 'demo-member-2',
+                  full_name: 'Demo Family Member 2',
+                  relationship: 'Family member',
+                },
+              ]);
+              setSelectedFamilyMemberId('');
               setDistributionItems({ Rice: '10', Sugar: '5', Wheat: '5', 'Toor dal': '2', Oil: '1.5' });
               setReceipt(null);
               setDistributionMessage('Edit quantities if needed, then create a sample receipt. Nothing will be redeemed.');
@@ -977,6 +1054,41 @@ function App() {
               <h3>Confirm Ration Distribution</h3>
               <p>Verified token: <strong>{scannedTokenCode}</strong></p>
               <p>Enter only the quantities actually handed to the consumer.</p>
+
+              <div style={{ marginBottom: 20 }}>
+                <label htmlFor="collector-member">
+                  <strong>Family member collecting the ration</strong>
+                </label>
+
+                <select
+                  id="collector-member"
+                  style={inputStyle}
+                  value={selectedFamilyMemberId}
+                  disabled={familyMembersLoading || familyMembers.length === 0}
+                  onChange={(event) =>
+                    setSelectedFamilyMemberId(event.target.value)
+                  }
+                >
+                  <option value="">
+                    {familyMembersLoading
+                      ? 'Loading family members...'
+                      : familyMembers.length === 0
+                        ? 'No family members available'
+                        : 'Select the collecting family member'}
+                  </option>
+
+                  {familyMembers.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.full_name} — {member.relationship}
+                    </option>
+                  ))}
+                </select>
+
+                <p style={{ color: '#64748b', fontSize: 13 }}>
+                  Select the person physically collecting the ration.
+                  Household ration entitlement remains unchanged.
+                </p>
+              </div>
 
               {distributionItemNames.map((item) => {
                 const available =
@@ -1069,6 +1181,8 @@ function App() {
                 onClick={() => {
                   setScannedTokenCode('');
                   setDistributionItems({});
+                  setSelectedFamilyMemberId('');
+                  setFamilyMembers([]);
                   setDistributionMessage('');
                 }}
               >
@@ -1091,6 +1205,10 @@ function App() {
 
               <p><strong>Receipt:</strong> {receipt.receipt_code}</p>
               <p><strong>Token:</strong> {receipt.token_code}</p>
+              <p>
+                <strong>Collected by:</strong>{' '}
+                {receipt.collected_by_member_name ?? 'Not recorded'}
+              </p>
               <p>
                 <strong>Payment:</strong> {receipt.payment_method.toUpperCase()}
               </p>
