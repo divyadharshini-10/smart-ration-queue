@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import './App.css';
 import { supabase } from './supabase';
 import { QRCodeSVG } from 'qrcode.react';
+import { Html5Qrcode } from 'html5-qrcode';
 
 type Role = 'consumer' | 'dealer' | 'official';
 type StockItem = { name: string; quantity: number };
@@ -81,14 +82,38 @@ function App() {
   const [stockSaveMessage, setStockSaveMessage] = useState('');
   const [savingStockKey, setSavingStockKey] = useState<string | null>(null);
   const [assignedShopCode, setAssignedShopCode] = useState<string | null>(null);
+  const [officialComplaints, setOfficialComplaints] = useState<any[]>([]);
+  const [officialComplaintMessage, setOfficialComplaintMessage] = useState('');
+  const [officialComplaintsLoading, setOfficialComplaintsLoading] = useState(false);
+  const [updatingComplaintCode, setUpdatingComplaintCode] = useState<string | null>(null);
+  const [shortageSignals, setShortageSignals] = useState<any[]>([]);
+  const [issuedTotalKg, setIssuedTotalKg] = useState(0);
+  const [recentIssued, setRecentIssued] = useState<any[]>([]);
+  const [monitoringMessage, setMonitoringMessage] = useState('');
+  const [monitoringLoading, setMonitoringLoading] = useState(false);
   const [activeToken, setActiveToken] = useState<Token | null>(null);
   const [showBooking, setShowBooking] = useState(false);
   const [bookingShop, setBookingShop] = useState('SHOP001');
   const [bookingDate, setBookingDate] = useState('');
   const [bookingSlot, setBookingSlot] = useState('9:00 AM – 11:00 AM');
   const [bookingMessage, setBookingMessage] = useState('');
+  const [complaintCategory, setComplaintCategory] = useState('Ration not provided');
+  const [complaintShop, setComplaintShop] = useState('SHOP001');
+  const [complaintDescription, setComplaintDescription] = useState('');
+  const [complaintMessage, setComplaintMessage] = useState('');
+  const [complaintSubmitting, setComplaintSubmitting] = useState(false);
+  const [myComplaints, setMyComplaints] = useState<any[]>([]);
+  const [complaintsLoading, setComplaintsLoading] = useState(false);
   const [notifications, setNotifications] = useState<string[]>([]);
   const [language, setLanguage] = useState<'English' | 'தமிழ்'>('English');
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanResult, setScanResult] = useState('');
+  const [scannedTokenCode, setScannedTokenCode] = useState('');
+  const [distributionItems, setDistributionItems] = useState<
+    Record<string, string>
+  >({});
+  const [distributionMessage, setDistributionMessage] = useState('');
+  const [distributionSubmitting, setDistributionSubmitting] = useState(false);
 
   const today = new Date().toLocaleDateString('en-CA');
 
@@ -107,6 +132,93 @@ function App() {
     width: '100%', boxSizing: 'border-box', padding: 10,
     border: '1px solid #cbd5e1', borderRadius: 8, marginTop: 6, marginBottom: 12,
   };
+
+  // Start the dealer QR scanner only while its panel is open. Cleanup stops the camera.
+  useEffect(() => {
+    if (!scannerOpen || !loggedIn || selectedRole !== 'dealer') return;
+
+    let disposed = false;
+    let handlingScan = false;
+    const scanner = new Html5Qrcode('dealer-qr-reader');
+
+    const stopScanner = async () => {
+      try {
+        if (scanner.isScanning) await scanner.stop();
+      } catch (error) {
+        console.warn('Could not stop QR scanner cleanly:', error);
+      }
+      try {
+        scanner.clear();
+      } catch {
+        // The scanner may not have finished initializing.
+      }
+    };
+
+    const verifyToken = async (tokenCode: string) => {
+      try {
+        const { data, error } = await supabase.rpc('verify_ration_token', {
+          p_token_code: tokenCode.trim(),
+        });
+
+        if (error) throw error;
+
+        const result = Array.isArray(data) ? data[0] : data;
+
+        if (!result?.success) {
+          setScannedTokenCode('');
+          setDistributionMessage('');
+          setScanResult(result?.message ?? 'Token verification failed.');
+          return;
+        }
+
+        setScannedTokenCode(result.token_code ?? tokenCode.trim());
+        setDistributionItems({});
+        setDistributionMessage('');
+        setScanResult(result.message ?? 'Token verified successfully.');
+      } catch (error) {
+        setScannedTokenCode('');
+        setScanResult(
+          error instanceof Error
+            ? `Verification failed: ${error.message}`
+            : 'Token verification failed. Please try again.'
+        );
+      }
+    };
+
+    const startScanner = async () => {
+      try {
+        await scanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 220, height: 220 } },
+          async (decodedText) => {
+            if (disposed || handlingScan) return;
+            handlingScan = true;
+            await stopScanner();
+            if (disposed) return;
+            setScannerOpen(false);
+            await verifyToken(decodedText);
+          },
+          () => { /* Ignore repeated frames without a QR code. */ }
+        );
+        if (disposed) await stopScanner();
+      } catch (error) {
+        if (!disposed) {
+          setScanResult(
+            error instanceof Error
+              ? `Could not start camera: ${error.message}`
+              : 'Could not start camera. Check browser camera permissions.'
+          );
+          setScannerOpen(false);
+        }
+      }
+    };
+
+    void startScanner();
+    return () => {
+      disposed = true;
+      void stopScanner();
+    };
+  }, [scannerOpen, loggedIn, selectedRole]);
 
   // Keep a local backup for consumer/demo views. Supabase remains the source for stock.
   useEffect(() => {
@@ -301,6 +413,7 @@ function App() {
   async function logout() {
     const { error } = await supabase.auth.signOut();
     if (error) setLoginMessage(`Sign-out error: ${error.message}`);
+    setScannerOpen(false);
     setLoggedIn(false);
     setSelectedRole(null);
     setAssignedShopCode(null);
@@ -400,6 +513,71 @@ function App() {
     }
   }
 
+  async function confirmDistribution() {
+    if (!scannedTokenCode) {
+      setDistributionMessage('Scan a valid token first.');
+      return;
+    }
+
+    const items = Object.entries(distributionItems)
+      .filter(([, value]) => value.trim() !== '')
+      .map(([item_name, value]) => ({
+        item_name,
+        quantity_kg: Number(value),
+      }));
+
+    if (items.length === 0) {
+      setDistributionMessage('Enter at least one item quantity.');
+      return;
+    }
+
+    if (items.some(
+      (item) =>
+        !Number.isFinite(item.quantity_kg) ||
+        item.quantity_kg <= 0
+    )) {
+      setDistributionMessage('Every quantity must be greater than zero.');
+      return;
+    }
+
+    setDistributionSubmitting(true);
+    setDistributionMessage('Recording distribution...');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'confirm_ration_distribution',
+        {
+          p_token_code: scannedTokenCode,
+          p_items: items,
+        }
+      );
+
+      if (error) throw error;
+
+      if (!data?.success) {
+        throw new Error(data?.message ?? 'Distribution failed.');
+      }
+
+      setDistributionMessage(
+        `Success! ${data.total_kg} kg distributed. ` +
+        `${data.items_issued} item(s) recorded.`
+      );
+      setScanResult(`Token ${scannedTokenCode} redeemed successfully.`);
+      setScannedTokenCode('');
+      setDistributionItems({});
+
+      await loadStock();
+    } catch (error) {
+      setDistributionMessage(
+        error instanceof Error
+          ? `Distribution failed: ${error.message}`
+          : 'Distribution failed. Please try again.'
+      );
+    } finally {
+      setDistributionSubmitting(false);
+    }
+  }
+
   async function bookToken() {
     if (!bookingDate || bookingDate < today) {
       setBookingMessage('Please choose today or a future date.');
@@ -459,6 +637,177 @@ function App() {
     }
   }
 
+  async function loadOfficialComplaints() {
+    setOfficialComplaintsLoading(true);
+    setOfficialComplaintMessage('');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'official_get_ration_complaints'
+      );
+
+      if (error) throw error;
+
+      setOfficialComplaints(Array.isArray(data) ? data : []);
+      setOfficialComplaintMessage(
+        Array.isArray(data) && data.length === 0
+          ? 'No complaints have been submitted yet.'
+          : 'Complaints loaded successfully.'
+      );
+    } catch (error) {
+      setOfficialComplaintMessage(
+        error instanceof Error
+          ? `Could not load complaints: ${error.message}`
+          : 'Could not load complaints.'
+      );
+    } finally {
+      setOfficialComplaintsLoading(false);
+    }
+  }
+
+  async function loadRationMonitoring() {
+    setMonitoringLoading(true);
+    setMonitoringMessage('');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'official_get_ration_monitoring'
+      );
+
+      if (error) throw error;
+
+      setShortageSignals(data?.shortages ?? []);
+      setIssuedTotalKg(Number(data?.issued_total_kg ?? 0));
+      setRecentIssued(data?.recent_issued ?? []);
+      setMonitoringMessage('Monitoring data loaded successfully.');
+    } catch (error) {
+      console.error('Ration monitoring error:', error);
+
+      const message =
+        error instanceof Error
+          ? error.message
+          : JSON.stringify(error);
+
+      setMonitoringMessage(
+        `Could not load monitoring: ${message}`
+      );
+    } finally {
+      setMonitoringLoading(false);
+    }
+  }
+
+  async function updateOfficialComplaint(
+    complaintCode: string,
+    status: string,
+    remarks: string
+  ) {
+    setUpdatingComplaintCode(complaintCode);
+    setOfficialComplaintMessage('');
+
+    try {
+      const { error } = await supabase.rpc(
+        'official_update_ration_complaint',
+        {
+          p_complaint_code: complaintCode,
+          p_status: status,
+          p_official_remarks: remarks
+        }
+      );
+
+      if (error) throw error;
+
+      setOfficialComplaintMessage(
+        `Complaint ${complaintCode} updated successfully.`
+      );
+
+      await loadOfficialComplaints();
+    } catch (error) {
+      setOfficialComplaintMessage(
+        error instanceof Error
+          ? `Update failed: ${error.message}`
+          : 'Could not update complaint.'
+      );
+    } finally {
+      setUpdatingComplaintCode(null);
+    }
+  }
+
+  async function submitComplaint() {
+    if (!consumerIdentity) {
+      setComplaintMessage('Please log in again.');
+      return;
+    }
+
+    if (complaintDescription.trim().length < 10) {
+      setComplaintMessage('Please describe the issue in at least 10 characters.');
+      return;
+    }
+
+    setComplaintSubmitting(true);
+    setComplaintMessage('Submitting complaint...');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'demo_submit_ration_complaint',
+        {
+          p_phone: consumerPhone.trim(),
+          p_ration_card: rationCardNumber.trim(),
+          p_otp: '123456',
+          p_shop_code: complaintShop,
+          p_category: complaintCategory,
+          p_description: complaintDescription.trim(),
+        }
+      );
+
+      if (error) throw error;
+      if (!data?.success) {
+        throw new Error(data?.message ?? 'Complaint submission failed.');
+      }
+
+      setComplaintMessage(
+        `Complaint submitted! Your tracking ID is ${data.complaint_code}.`
+      );
+      setComplaintDescription('');
+      await loadMyComplaints();
+    } catch (error) {
+      setComplaintMessage(
+        error instanceof Error
+          ? `Could not submit: ${error.message}`
+          : 'Could not submit the complaint.'
+      );
+    } finally {
+      setComplaintSubmitting(false);
+    }
+  }
+
+  async function loadMyComplaints() {
+    if (!consumerIdentity) return;
+
+    setComplaintsLoading(true);
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'demo_get_my_ration_complaints',
+        {
+          p_phone: consumerPhone.trim(),
+          p_ration_card: rationCardNumber.trim(),
+          p_otp: '123456',
+        }
+      );
+
+      if (error) throw error;
+      setMyComplaints(Array.isArray(data) ? data : []);
+    } catch (error) {
+      setComplaintMessage(
+        error instanceof Error
+          ? `Could not load complaints: ${error.message}`
+          : 'Could not load your complaints.'
+      );
+    } finally {
+      setComplaintsLoading(false);
+    }
+  }
+
   function notifyWhenAvailable(shop: Shop) {
     const unavailable = shop.stock.filter((item) => item.quantity === 0);
     const messages = unavailable.map(
@@ -487,6 +836,97 @@ function App() {
           </div>
           <button style={buttonStyle} onClick={logout}>Log out</button>
         </header>
+
+        <section style={{ ...cardStyle, marginTop: 24 }}>
+          <h2>Scan Consumer QR Token</h2>
+          <p>Scan the QR code displayed on the consumer's active ration token to verify it.</p>
+          {!scannerOpen ? (
+            <button
+              type="button"
+              style={buttonStyle}
+              onClick={() => { setScanResult(''); setScannerOpen(true); }}
+            >
+              Open QR Scanner
+            </button>
+          ) : (
+            <div>
+              <div id="dealer-qr-reader" style={{ width: '100%', maxWidth: 400 }} />
+              <button
+                type="button"
+                style={{ ...buttonStyle, marginTop: 12, background: '#64748b' }}
+                onClick={() => setScannerOpen(false)}
+              >
+                Close Scanner
+              </button>
+            </div>
+          )}
+          {scanResult && (
+            <p role="status" aria-live="polite" style={{ marginTop: 12, overflowWrap: 'anywhere' }}>
+              {scanResult}
+            </p>
+          )}
+
+          {scannedTokenCode && (
+            <div style={{ marginTop: 20, padding: 16, border: '1px solid #bbf7d0', borderRadius: 12 }}>
+              <h3>Confirm Ration Distribution</h3>
+              <p>Verified token: <strong>{scannedTokenCode}</strong></p>
+              <p>Enter only the quantities actually handed to the consumer.</p>
+
+              {['Rice', 'Sugar', 'Wheat', 'Oil'].map((item) => {
+                const available =
+                  dealerShops[0]?.stock.find((stock) => stock.name === item)?.quantity ?? 0;
+
+                return (
+                  <div key={item} style={{ marginBottom: 12 }}>
+                    <label htmlFor={`issue-${item}`}>{item} (available: {available} kg)</label>
+                    <input
+                      id={`issue-${item}`}
+                      type="number"
+                      min="0"
+                      max={available}
+                      step="0.01"
+                      style={inputStyle}
+                      value={distributionItems[item] ?? ''}
+                      placeholder="Quantity to issue in kg"
+                      onChange={(event) =>
+                        setDistributionItems((current) => ({
+                          ...current,
+                          [item]: event.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+                );
+              })}
+
+              <button
+                type="button"
+                style={buttonStyle}
+                disabled={distributionSubmitting}
+                onClick={() => void confirmDistribution()}
+              >
+                {distributionSubmitting ? 'Recording...' : 'Confirm & Record Distribution'}
+              </button>
+
+              <button
+                type="button"
+                style={{ ...buttonStyle, marginLeft: 8, background: '#64748b' }}
+                disabled={distributionSubmitting}
+                onClick={() => {
+                  setScannedTokenCode('');
+                  setDistributionItems({});
+                  setDistributionMessage('');
+                }}
+              >
+                Cancel
+              </button>
+
+              {distributionMessage && (
+                <p role="status" aria-live="polite">{distributionMessage}</p>
+              )}
+            </div>
+          )}
+        </section>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 20, marginTop: 24 }}>
           {dealerShops.length === 0 ? (
@@ -567,6 +1007,107 @@ function App() {
           <section style={cardStyle}><h3>Low-stock items</h3><h2>{lowStockItems}</h2></section>
           <section style={cardStyle}><h3>Out-of-stock items</h3><h2>{outOfStockItems}</h2></section>
         </div>
+        <section style={{ ...cardStyle, marginTop: 24 }}>
+          <h2>Shortage Signals & Ration Issued</h2>
+          <p>Monitor stock shortages and actual ration distribution across shops.</p>
+
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={monitoringLoading}
+            onClick={() => void loadRationMonitoring()}
+          >
+            {monitoringLoading ? 'Loading...' : 'Refresh Monitoring'}
+          </button>
+
+          {monitoringMessage && <p role="status">{monitoringMessage}</p>}
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+              gap: 16,
+              marginTop: 16,
+            }}
+          >
+            <div style={cardStyle}>
+              <h3>Shortage Signals</h3>
+              <p>{shortageSignals.length} items need attention</p>
+            </div>
+
+            <div style={cardStyle}>
+              <h3>Total Ration Issued</h3>
+              <p>{issuedTotalKg.toLocaleString()} kg</p>
+            </div>
+          </div>
+
+          <h3>Items Requiring Restock</h3>
+
+          {shortageSignals.length === 0 ? (
+            <p>No shortage signals found.</p>
+          ) : (
+            shortageSignals.map((item, index) => (
+              <div
+                key={`${item.shop_code}-${item.item_name}-${index}`}
+                style={{ ...cardStyle, marginTop: 12 }}
+              >
+                <strong>{item.level}</strong>
+                <p>{item.shop_name} ({item.shop_code})</p>
+                <p>{item.item_name}: {item.quantity_kg} kg</p>
+              </div>
+            ))
+          )}
+
+          <h3>Recent Ration Issued</h3>
+
+          {recentIssued.length === 0 ? (
+            <p>No ration issue records yet. The total is currently 0 kg.</p>
+          ) : (
+            recentIssued.map((item, index) => (
+              <div
+                key={`${item.shop_code}-${item.item_name}-${item.issued_at}-${index}`}
+                style={{ ...cardStyle, marginTop: 12 }}
+              >
+                <p><strong>{item.shop_name}</strong> ({item.shop_code})</p>
+                <p>{item.item_name}: {item.quantity_kg} kg</p>
+                <p>{new Date(item.issued_at).toLocaleString()}</p>
+              </div>
+            ))
+          )}
+        </section>
+
+        <section style={{ ...cardStyle, marginTop: 24 }}>
+          <h2>Manage Consumer Complaints</h2>
+          <p>Review consumer reports and record the action taken.</p>
+
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={officialComplaintsLoading}
+            onClick={() => void loadOfficialComplaints()}
+          >
+            {officialComplaintsLoading ? 'Loading...' : 'Load Complaints'}
+          </button>
+
+          {officialComplaintMessage && (
+            <p role="status" style={{ overflowWrap: 'anywhere' }}>
+              {officialComplaintMessage}
+            </p>
+          )}
+
+          {officialComplaints.map((complaint) => (
+            <OfficialComplaintCard
+              key={complaint.complaint_code}
+              complaint={complaint}
+              cardStyle={cardStyle}
+              inputStyle={inputStyle}
+              buttonStyle={buttonStyle}
+              updating={updatingComplaintCode === complaint.complaint_code}
+              onUpdate={updateOfficialComplaint}
+            />
+          ))}
+        </section>
+
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 20, marginTop: 24 }}>
           {shops.map((shop) => (
             <section key={shop.id} style={cardStyle}>
@@ -605,6 +1146,121 @@ function App() {
             </div>
           </section>
         )}
+
+        <section style={{ ...cardStyle, marginTop: 20 }}>
+          <h2>Raise a Complaint</h2>
+          <p>
+            Report ration distribution problems to the government grievance team.
+            Keep your tracking ID to follow up.
+          </p>
+
+          <label htmlFor="complaint-shop">Select ration shop</label>
+          <select
+            id="complaint-shop"
+            style={inputStyle}
+            value={complaintShop}
+            onChange={(event) => setComplaintShop(event.target.value)}
+          >
+            {shops.map((shop) => (
+              <option key={shop.id} value={shop.id}>
+                {shop.name} — {shop.village}
+              </option>
+            ))}
+          </select>
+
+          <label htmlFor="complaint-category">Complaint category</label>
+          <select
+            id="complaint-category"
+            style={inputStyle}
+            value={complaintCategory}
+            onChange={(event) => setComplaintCategory(event.target.value)}
+          >
+            <option>Ration not provided</option>
+            <option>Incorrect quantity</option>
+            <option>Overcharging</option>
+            <option>Dealer misconduct</option>
+            <option>Stock unavailable</option>
+            <option>Other</option>
+          </select>
+
+          <label htmlFor="complaint-description">
+            Describe your problem
+          </label>
+          <textarea
+            id="complaint-description"
+            style={{ ...inputStyle, minHeight: 110, resize: 'vertical' }}
+            maxLength={2000}
+            placeholder="Explain what happened..."
+            value={complaintDescription}
+            onChange={(event) => setComplaintDescription(event.target.value)}
+          />
+
+          <button
+            type="button"
+            style={{
+              ...buttonStyle,
+              opacity: complaintSubmitting ? 0.7 : 1,
+            }}
+            disabled={complaintSubmitting}
+            onClick={() => void submitComplaint()}
+          >
+            {complaintSubmitting ? 'Submitting...' : 'Submit Complaint'}
+          </button>
+
+          {complaintMessage && (
+            <p role="status" style={{ overflowWrap: 'anywhere' }}>
+              {complaintMessage}
+            </p>
+          )}
+        </section>
+
+        <section style={{ ...cardStyle, marginTop: 20 }}>
+          <h2>My Complaints</h2>
+          <p>Check your complaint tracking IDs and current status.</p>
+
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={complaintsLoading}
+            onClick={() => void loadMyComplaints()}
+          >
+            {complaintsLoading ? 'Loading...' : 'View My Complaints'}
+          </button>
+
+          {myComplaints.length === 0 ? (
+            <p>
+              {complaintsLoading
+                ? 'Loading complaints...'
+                : 'No complaints loaded yet. Select "View My Complaints" to check.'}
+            </p>
+          ) : (
+            myComplaints.map((complaint) => (
+              <div
+                key={complaint.complaint_code}
+                style={{
+                  borderTop: '1px solid #e2e8f0',
+                  padding: '14px 0',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                <h3>{complaint.complaint_code}</h3>
+                <p><strong>Shop:</strong> {complaint.shop_code}</p>
+                <p><strong>Category:</strong> {complaint.category}</p>
+                <p><strong>Description:</strong> {complaint.description}</p>
+                <p>
+                  <strong>Status:</strong>{' '}
+                  <span style={{ color: '#176b45' }}>
+                    {complaint.status}
+                  </span>
+                </p>
+                <p>
+                  <strong>Official remarks:</strong>{' '}
+                  {complaint.official_remarks || 'No response yet.'}
+                </p>
+              </div>
+            ))
+          )}
+        </section>
 
         <section style={{ ...cardStyle, marginTop: 20 }}>
           <h2>Find a ration shop</h2>
@@ -735,7 +1391,7 @@ function App() {
           {loginMessage && <p role="status" style={{ color: '#b91c1c', marginTop: 12 }}>{loginMessage}</p>}
           <button type="button" style={{ ...buttonStyle, background: '#64748b', width: '100%', marginTop: 12 }} onClick={() => { setSelectedRole(null); setPassword(''); setConsumerOtp(''); setLoginMessage(''); }}>Back</button>
           <p style={{ color: '#64748b', fontSize: 12, marginTop: 16 }}>
-            {selectedRole === 'consumer' ? 'Demo only: tokens are saved in this browser for the matching phone and ration card combination.' : 'Use a registered Supabase account. Access depends on the role assigned to that account in the database.'}
+            {selectedRole === 'consumer' ? 'Demo login only: use OTP 123456. Consumer tokens are stored through Supabase for this demo.' : 'Use a registered Supabase account. Access depends on the role assigned to that account in the database.'}
           </p>
         </section>
       )}
@@ -747,4 +1403,101 @@ function App() {
   );
 }
 
-export default App;
+type OfficialComplaint = {
+  complaint_code: string;
+  shop_code: string;
+  category: string;
+  description: string;
+  status: string;
+  official_remarks: string | null;
+  created_at: string;
+};
+
+function OfficialComplaintCard({
+  complaint,
+  cardStyle,
+  inputStyle,
+  buttonStyle,
+  updating,
+  onUpdate,
+}: {
+  complaint: OfficialComplaint;
+  cardStyle: React.CSSProperties;
+  inputStyle: React.CSSProperties;
+  buttonStyle: React.CSSProperties;
+  updating: boolean;
+  onUpdate: (
+    complaintCode: string,
+    status: string,
+    remarks: string
+  ) => Promise<void>;
+}) {
+  const [status, setStatus] = useState(complaint.status);
+  const [remarks, setRemarks] = useState(
+    complaint.official_remarks ?? ''
+  );
+
+  return (
+    <article
+      style={{
+        ...cardStyle,
+        marginTop: 16,
+        boxShadow: 'none',
+        background: '#f8fafc',
+      }}
+    >
+      <h3>{complaint.complaint_code}</h3>
+      <p><strong>Shop:</strong> {complaint.shop_code}</p>
+      <p><strong>Category:</strong> {complaint.category}</p>
+      <p><strong>Description:</strong> {complaint.description}</p>
+      <p>
+        <strong>Submitted:</strong>{' '}
+        {new Date(complaint.created_at).toLocaleString()}
+      </p>
+
+      <label htmlFor={`status-${complaint.complaint_code}`}>
+        Complaint status
+      </label>
+      <select
+        id={`status-${complaint.complaint_code}`}
+        style={inputStyle}
+        value={status}
+        onChange={(event) => setStatus(event.target.value)}
+      >
+        <option>Pending</option>
+        <option>Under Review</option>
+        <option>Action Taken</option>
+        <option>Resolved</option>
+        <option>Rejected</option>
+      </select>
+
+      <label htmlFor={`remarks-${complaint.complaint_code}`}>
+        Official remarks
+      </label>
+      <textarea
+        id={`remarks-${complaint.complaint_code}`}
+        style={{ ...inputStyle, minHeight: 80 }}
+        maxLength={2000}
+        placeholder="Enter action taken or response to the consumer..."
+        value={remarks}
+        onChange={(event) => setRemarks(event.target.value)}
+      />
+
+      <button
+        type="button"
+        style={{
+          ...buttonStyle,
+          opacity: updating ? 0.7 : 1,
+        }}
+        disabled={updating}
+        onClick={() =>
+          void onUpdate(complaint.complaint_code, status, remarks)
+        }
+      >
+        {updating ? 'Saving...' : 'Save Update'}
+      </button>
+    </article>
+  );
+}
+
+export default App;                                              
