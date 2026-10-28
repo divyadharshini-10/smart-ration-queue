@@ -88,9 +88,9 @@ function App() {
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [email, setEmail] = useState('user01@gmail.com');
   const [password, setPassword] = useState('');
-  const [consumerPhone, setConsumerPhone] = useState('');
-  const [rationCardNumber, setRationCardNumber] = useState('');
-  const [consumerOtp, setConsumerOtp] = useState('');
+  const [consumerPhone, setConsumerPhone] = useState('0987654321');
+  const [rationCardNumber, setRationCardNumber] = useState('4321');
+  const [consumerOtp, setConsumerOtp] = useState('123456');
   const [consumerIdentity, setConsumerIdentity] = useState<string | null>(null);
   const [loggedIn, setLoggedIn] = useState(false);
   const [loginMessage, setLoginMessage] = useState('');
@@ -156,6 +156,12 @@ function App() {
     useState<FamilyMember[]>([]);
   const [consumerSelectedMemberId, setConsumerSelectedMemberId] =
     useState('');
+
+  void familyMembers;
+  void selectedFamilyMemberId;
+  void familyMembersLoading;
+  void consumerFamilyMembers;
+  void consumerSelectedMemberId;
 
   const today = new Date().toLocaleDateString('en-CA');
 
@@ -494,6 +500,8 @@ function App() {
     }
   }
 
+  void loadConsumerFamilyMembers;
+
   async function loginConsumerWithDummyOtp() {
     const phone = consumerPhone.trim();
     const rationCard = rationCardNumber.trim();
@@ -534,8 +542,6 @@ function App() {
       setActiveToken(savedToken);
       setConsumerSelectedMemberId('');
       setNotifications([]);
-
-      await loadConsumerFamilyMembers();
 
       setSearch('');
       setLoggedIn(true);
@@ -715,13 +721,6 @@ function App() {
       return;
     }
 
-    if (!selectedFamilyMemberId) {
-      setDistributionMessage(
-        'Please select the family member collecting the ration.'
-      );
-      return;
-    }
-
     const items = Object.entries(distributionItems)
       .filter(([, value]) => value.trim() !== '')
       .map(([item_name, value]) => ({
@@ -761,11 +760,8 @@ function App() {
         preview_only: true,
         receipt_code: `SAMPLE-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`,
         token_code: scannedTokenCode,
-        collected_by_member_id: selectedFamilyMemberId,
-        collected_by_member_name:
-          familyMembers.find(
-            (member) => member.id === selectedFamilyMemberId
-          )?.full_name ?? 'Demo family member',
+        collected_by_member_id: null,
+        collected_by_member_name: 'Consumer',
         payment_method: paymentMethod,
         payment_status: 'sample_only',
         total_amount: total,
@@ -787,7 +783,7 @@ function App() {
           p_token_code: scannedTokenCode,
           p_items: items,
           p_payment_method: paymentMethod,
-          p_collected_by_member_id: selectedFamilyMemberId,
+          p_collected_by_member_id: null,
         }
       );
 
@@ -821,11 +817,6 @@ function App() {
   }
 
   async function bookToken() {
-    if (!consumerSelectedMemberId) {
-      setBookingMessage('Please select a family member.');
-      return;
-    }
-
     if (!bookingDate || bookingDate < today) {
       setBookingMessage('Please choose today or a future date.');
       return;
@@ -855,7 +846,7 @@ function App() {
           p_shop_code: bookingShop,
           p_token_date: bookingDate,
           p_time_slot: bookingSlot,
-          p_family_member_id: consumerSelectedMemberId,
+          p_family_member_id: null,
         }
       );
 
@@ -1127,18 +1118,7 @@ function App() {
               setScannerOpen(false);
               setScanResult('Sample token loaded locally. No database lookup was performed.');
               setScannedTokenCode('SAMPLE-TOKEN-001');
-              setFamilyMembers([
-                {
-                  id: 'demo-member-1',
-                  full_name: 'Demo Family Member',
-                  relationship: 'Head of family',
-                },
-                {
-                  id: 'demo-member-2',
-                  full_name: 'Demo Family Member 2',
-                  relationship: 'Family member',
-                },
-              ]);
+              setFamilyMembers([]);
               setSelectedFamilyMemberId('');
               setDistributionItems({ Rice: '10', Sugar: '5', Wheat: '5', 'Toor dal': '2', Oil: '1.5' });
               setReceipt(null);
@@ -1177,41 +1157,6 @@ function App() {
               <h3>Confirm Ration Distribution</h3>
               <p>Verified token: <strong>{scannedTokenCode}</strong></p>
               <p>Enter only the quantities actually handed to the consumer.</p>
-
-              <div style={{ marginBottom: 20 }}>
-                <label htmlFor="collector-member">
-                  <strong>Family member collecting the ration</strong>
-                </label>
-
-                <select
-                  id="collector-member"
-                  style={inputStyle}
-                  value={selectedFamilyMemberId}
-                  disabled={familyMembersLoading || familyMembers.length === 0}
-                  onChange={(event) =>
-                    setSelectedFamilyMemberId(event.target.value)
-                  }
-                >
-                  <option value="">
-                    {familyMembersLoading
-                      ? 'Loading family members...'
-                      : familyMembers.length === 0
-                        ? 'No family members available'
-                        : 'Select the collecting family member'}
-                  </option>
-
-                  {familyMembers.map((member) => (
-                    <option key={member.id} value={member.id}>
-                      {member.full_name} — {member.relationship}
-                    </option>
-                  ))}
-                </select>
-
-                <p style={{ color: '#64748b', fontSize: 13 }}>
-                  Select the person physically collecting the ration.
-                  Household ration entitlement remains unchanged.
-                </p>
-              </div>
 
               {distributionItemNames.map((item) => {
                 const available =
@@ -1568,7 +1513,7 @@ function App() {
 
         {activeToken && (
           <section style={{ ...cardStyle, marginTop: 20, background: '#f0fdf4' }}>
-            <h2>Your active token</h2><h1 style={{ color: '#166534' }}>{activeToken.number}</h1>
+            <h2>Your active token</h2><h1 style={{ color: '#166534' }}>Token No. {activeToken.queueNumber ?? activeToken.number}</h1>
             <p><strong>Shop:</strong> {activeToken.shopName}</p>
             <p><strong>Date:</strong> {activeToken.date}</p>
             <p><strong>Time slot:</strong> {activeToken.slot}</p>
@@ -1776,33 +1721,6 @@ function App() {
               <select id="booking-shop" style={inputStyle} value={bookingShop} onChange={(event) => setBookingShop(event.target.value)}>
                 {shops.map((shop) => <option key={shop.id} value={shop.id}>{shop.name} — {shop.village}</option>)}
               </select>
-              <label htmlFor="booking-family-member">
-                Select family member
-              </label>
-
-              <select
-                id="booking-family-member"
-                value={consumerSelectedMemberId}
-                onChange={(e) =>
-                  setConsumerSelectedMemberId(e.target.value)
-                }
-                required
-                style={{
-                  width: '100%',
-                  padding: '12px',
-                  marginBottom: '16px',
-                  borderRadius: '8px',
-                  border: '1px solid #ccc',
-                }}
-              >
-                <option value="">Choose a family member</option>
-
-                {consumerFamilyMembers.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.full_name} ({member.relationship})
-                  </option>
-                ))}
-              </select>
               <label htmlFor="booking-date">Select date</label>
               <input id="booking-date" type="date" min={today} style={inputStyle} value={bookingDate} onChange={(event) => setBookingDate(event.target.value)} />
               <label htmlFor="booking-slot">Select time slot</label>
@@ -1866,14 +1784,14 @@ function App() {
           <h2>{selectedRole === 'consumer' ? 'Consumer Login' : selectedRole === 'dealer' ? 'Ration Dealer Login' : 'Government Official Login'}</h2>
           {selectedRole === 'consumer' ? (
             <>
-              <p style={{ color: '#64748b' }}>Demo login only — no SMS or Twilio is used. Use OTP 123456.</p>
+              <p style={{ color: '#64748b' }}>Demo login only — no SMS or Twilio is used. Use demo phone 0987654321, ration card 4321, and OTP 123456.</p>
               <form onSubmit={(event) => { event.preventDefault(); loginConsumerWithDummyOtp(); }}>
                 <label htmlFor="consumer-phone">10-digit phone number</label>
-                <input id="consumer-phone" type="tel" inputMode="numeric" autoComplete="tel-national" required maxLength={10} pattern="[0-9]{10}" style={inputStyle} placeholder="Enter phone number" value={consumerPhone} onChange={(event) => setConsumerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} />
+                <input id="consumer-phone" type="tel" inputMode="numeric" autoComplete="tel-national" required maxLength={10} pattern="[0-9]{10}" style={inputStyle} placeholder="0987654321" value={consumerPhone} onChange={(event) => setConsumerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} />
                 <label htmlFor="ration-card">Ration card number</label>
-                <input id="ration-card" required style={inputStyle} placeholder="Enter ration card number" value={rationCardNumber} onChange={(event) => setRationCardNumber(event.target.value)} />
+                <input id="ration-card" required style={inputStyle} placeholder="4321" value={rationCardNumber} onChange={(event) => setRationCardNumber(event.target.value)} />
                 <label htmlFor="consumer-otp">Demo OTP</label>
-                <input id="consumer-otp" inputMode="numeric" required maxLength={6} style={inputStyle} placeholder="Enter 123456" value={consumerOtp} onChange={(event) => setConsumerOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} />
+                <input id="consumer-otp" inputMode="numeric" required maxLength={6} style={inputStyle} placeholder="123456" value={consumerOtp} onChange={(event) => setConsumerOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} />
                 <button type="submit" style={{ ...buttonStyle, width: '100%' }}>Open consumer dashboard</button>
               </form>
             </>
@@ -1894,7 +1812,7 @@ function App() {
           {loginMessage && <p role="status" style={{ color: '#b91c1c', marginTop: 12 }}>{loginMessage}</p>}
           <button type="button" style={{ ...buttonStyle, background: '#64748b', width: '100%', marginTop: 12 }} onClick={() => { setSelectedRole(null); setPassword(''); setConsumerOtp(''); setLoginMessage(''); }}>Back</button>
           <p style={{ color: '#64748b', fontSize: 12, marginTop: 16 }}>
-            {selectedRole === 'consumer' ? 'Demo login only: use OTP 123456. Consumer tokens are stored through Supabase for this demo.' : 'Use a registered Supabase account. Access depends on the role assigned to that account in the database.'}
+            {selectedRole === 'consumer' ? 'Demo credentials: phone 0987654321, ration card 4321, OTP 123456.' : 'Use a registered Supabase account. Access depends on the role assigned to that account in the database.'}
           </p>
         </section>
       )}
