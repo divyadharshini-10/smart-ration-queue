@@ -35,6 +35,23 @@ type FamilyMember = {
   relationship: string;
 };
 
+type ReceiptHistoryItem = {
+  item_name: string;
+  quantity_kg: number;
+  price_per_kg: number;
+  line_total: number;
+};
+
+type ReceiptHistoryRecord = {
+  receipt_code: string;
+  token_code: string;
+  total_amount: number;
+  payment_method: string;
+  payment_status: string;
+  created_at: string;
+  items: ReceiptHistoryItem[];
+};
+
 function getStockStatus(quantity: number) {
   if (quantity === 0) return 'Out of stock';
   if (quantity < 20) return 'Low stock';
@@ -158,6 +175,12 @@ function App() {
   const [officialFeedback, setOfficialFeedback] = useState('');
   const [resettingTokens, setResettingTokens] = useState(false);
   const [resetTokensMessage, setResetTokensMessage] = useState('');
+  const [receiptHistory, setReceiptHistory] =
+    useState<ReceiptHistoryRecord[]>([]);
+  const [receiptHistoryLoading, setReceiptHistoryLoading] =
+    useState(false);
+  const [receiptHistoryMessage, setReceiptHistoryMessage] =
+    useState('');
 
   const today = new Date().toLocaleDateString('en-CA');
 
@@ -513,6 +536,7 @@ function App() {
 
       setConsumerIdentity(identity);
       setActiveToken(savedToken);
+      await loadReceiptHistory(phone, rationCard);
       setNotifications([]);
 
       setSearch('');
@@ -591,6 +615,8 @@ function App() {
     setActiveToken(null);
     setPublicQueue([]);
     setQueueMessage('');
+    setReceiptHistory([]);
+    setReceiptHistoryMessage('');
     setConsumerPhone('');
     setRationCardNumber('');
     setConsumerOtp('');
@@ -1037,6 +1063,51 @@ function App() {
       );
     } finally {
       setComplaintsLoading(false);
+    }
+  }
+
+  async function loadReceiptHistory(
+    phone: string,
+    rationCard: string
+  ) {
+    setReceiptHistoryLoading(true);
+    setReceiptHistoryMessage('');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'demo_get_consumer_receipts',
+        {
+          p_phone: phone.trim(),
+          p_ration_card: rationCard.trim(),
+          p_otp: '123456',
+        }
+      );
+
+      if (error) throw error;
+
+      const records = data?.receipts;
+
+      setReceiptHistory(
+        Array.isArray(records)
+          ? (records as ReceiptHistoryRecord[])
+          : []
+      );
+
+      setReceiptHistoryMessage(
+        Array.isArray(records) && records.length > 0
+          ? ''
+          : 'No receipts found for this ration card yet.'
+      );
+    } catch (error) {
+      console.error('Receipt history loading failed:', error);
+      setReceiptHistory([]);
+      setReceiptHistoryMessage(
+        error instanceof Error
+          ? `Could not load receipt history: ${error.message}`
+          : 'Could not load receipt history.'
+      );
+    } finally {
+      setReceiptHistoryLoading(false);
     }
   }
 
@@ -1870,6 +1941,79 @@ function App() {
             </div>
           </section>
         )}
+
+        <section style={{ ...cardStyle, marginTop: 24 }}>
+          <h2>Receipt History</h2>
+          <p style={{ color: '#64748b' }}>
+            View receipts for ration distributions already recorded by the dealer.
+          </p>
+
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={receiptHistoryLoading}
+            onClick={() =>
+              void loadReceiptHistory(
+                consumerPhone,
+                rationCardNumber
+              )
+            }
+          >
+            {receiptHistoryLoading ? 'Loading receipts...' : 'Refresh Receipts'}
+          </button>
+
+          {receiptHistoryMessage && (
+            <p role="status">{receiptHistoryMessage}</p>
+          )}
+
+          {receiptHistory.map((item) => (
+            <article
+              key={item.receipt_code}
+              style={{ ...cardStyle, marginTop: 16 }}
+            >
+              <h3>Receipt: {item.receipt_code}</h3>
+              <p><strong>Token:</strong> {item.token_code}</p>
+              <p>
+                <strong>Date:</strong>{' '}
+                {new Date(item.created_at).toLocaleString()}
+              </p>
+              <p>
+                <strong>Payment:</strong> {item.payment_method} — {item.payment_status}
+              </p>
+
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: 8 }}>Item</th>
+                      <th style={{ textAlign: 'right', padding: 8 }}>Quantity</th>
+                      <th style={{ textAlign: 'right', padding: 8 }}>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {item.items.map((line, index) => (
+                      <tr key={`${item.receipt_code}-${line.item_name}-${index}`}>
+                        <td style={{ padding: 8 }}>{line.item_name}</td>
+                        <td style={{ textAlign: 'right', padding: 8 }}>
+                          {Number(line.quantity_kg)} {getUnit(line.item_name)}
+                        </td>
+                        <td style={{ textAlign: 'right', padding: 8 }}>
+                          ₹{Number(line.line_total).toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p style={{ textAlign: 'right', fontSize: 18 }}>
+                <strong>
+                  Total: ₹{Number(item.total_amount).toFixed(2)}
+                </strong>
+              </p>
+            </article>
+          ))}
+        </section>
 
         <section style={{ ...cardStyle, marginTop: 20 }}>
           <h2>Find a ration shop</h2>
