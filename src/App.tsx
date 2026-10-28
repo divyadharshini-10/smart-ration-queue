@@ -88,9 +88,9 @@ function App() {
   const [selectedRole, setSelectedRole] = useState<Role | null>(null);
   const [email, setEmail] = useState('user01@gmail.com');
   const [password, setPassword] = useState('');
-  const [consumerPhone, setConsumerPhone] = useState('0987654321');
-  const [rationCardNumber, setRationCardNumber] = useState('4321');
-  const [consumerOtp, setConsumerOtp] = useState('123456');
+  const [consumerPhone, setConsumerPhone] = useState('');
+  const [rationCardNumber, setRationCardNumber] = useState('');
+  const [consumerOtp, setConsumerOtp] = useState('');
   const [consumerIdentity, setConsumerIdentity] = useState<string | null>(null);
   const [loggedIn, setLoggedIn] = useState(false);
   const [loginMessage, setLoginMessage] = useState('');
@@ -152,6 +152,12 @@ function App() {
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   const [selectedFamilyMemberId, setSelectedFamilyMemberId] = useState('');
   const [familyMembersLoading, setFamilyMembersLoading] = useState(false);
+  const [officialShopSearch, setOfficialShopSearch] = useState('');
+  const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all');
+  const [complaintStatusFilter, setComplaintStatusFilter] = useState('All');
+  const [officialFeedback, setOfficialFeedback] = useState('');
+  const [resettingTokens, setResettingTokens] = useState(false);
+  const [resetTokensMessage, setResetTokensMessage] = useState('');
 
   const today = new Date().toLocaleDateString('en-CA');
 
@@ -267,6 +273,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem('ration-shops', JSON.stringify(shops));
   }, [shops]);
+
+  // Load monitoring data automatically when an official signs in.
+  useEffect(() => {
+    if (loggedIn && selectedRole === 'official') {
+      void loadRationMonitoring();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loggedIn, selectedRole]);
 
   // Refresh the public queue every 5 seconds.
   useEffect(() => {
@@ -1016,6 +1030,41 @@ function App() {
     }
   }
 
+  async function resetTestTokens() {
+    const confirmed = window.confirm(
+      'Delete ALL ration token records? Accounts, shops, stock, complaints, and receipts will not be intentionally deleted. This cannot be undone.'
+    );
+
+    if (!confirmed) return;
+
+    setResettingTokens(true);
+    setResetTokensMessage('');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'reset_test_ration_tokens'
+      );
+
+      if (error) throw error;
+
+      setResetTokensMessage(
+        `Reset successful. ${data ?? 0} token record(s) deleted.`
+      );
+
+      setActiveToken(null);
+      await loadRationMonitoring();
+    } catch (error) {
+      console.error('Token reset failed:', error);
+      setResetTokensMessage(
+        error instanceof Error
+          ? `Reset failed: ${error.message}`
+          : 'Reset failed. Please try again.'
+      );
+    } finally {
+      setResettingTokens(false);
+    }
+  }
+
   function notifyWhenAvailable(shop: Shop) {
     const unavailable = shop.stock.filter((item) => item.quantity === 0);
     const messages = unavailable.map(
@@ -1367,11 +1416,36 @@ function App() {
   }
 
   if (loggedIn && selectedRole === 'official') {
-    const totalStock = shops.reduce((total, shop) => total + shop.stock.reduce((sum, item) => sum + item.quantity, 0), 0);
+    // Oil is measured in litres, so it is totalled separately from the kg items.
+    const totalStockKg = shops.reduce((total, shop) => total + shop.stock.filter((item) => item.name !== 'Oil').reduce((sum, item) => sum + item.quantity, 0), 0);
+    const totalOilLitres = shops.reduce((total, shop) => total + shop.stock.filter((item) => item.name === 'Oil').reduce((sum, item) => sum + item.quantity, 0), 0);
     const lowStockItems = shops.reduce((total, shop) => total + shop.stock.filter((item) => item.quantity > 0 && item.quantity < 20).length, 0);
     const outOfStockItems = shops.reduce((total, shop) => total + shop.stock.filter((item) => item.quantity === 0).length, 0);
+
+    const stockFilterMatches = (quantity: number) =>
+      stockFilter === 'all'
+        ? true
+        : stockFilter === 'low'
+          ? quantity > 0 && quantity < 20
+          : quantity === 0;
+
+    const officialVisibleShops = shops.filter((shop) => {
+      const text = officialShopSearch.trim().toLowerCase();
+      const matchesSearch =
+        !text ||
+        shop.name.toLowerCase().includes(text) ||
+        shop.village.toLowerCase().includes(text) ||
+        shop.id.toLowerCase().includes(text);
+      const matchesStock =
+        stockFilter === 'all' || shop.stock.some((item) => stockFilterMatches(item.quantity));
+      return matchesSearch && matchesStock;
+    });
+
+    const scrollToSection = (id: string) =>
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
     return (
-      <main style={pageStyle}>
+      <main style={pageStyle} className="gov-dashboard">
         <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <div>
             <h1>GOVERNMENT OFFICIAL DASHBOARD</h1>
@@ -1380,13 +1454,71 @@ function App() {
           </div>
           <button style={buttonStyle} onClick={logout}>Log out</button>
         </header>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginTop: 20 }}>
-          <section style={cardStyle}><h3>Total shops</h3><h2>{shops.length}</h2></section>
-          <section style={cardStyle}><h3>Total stock</h3><h2>{totalStock} kg</h2></section>
-          <section style={cardStyle}><h3>Low-stock items</h3><h2>{lowStockItems}</h2></section>
-          <section style={cardStyle}><h3>Out-of-stock items</h3><h2>{outOfStockItems}</h2></section>
+        <div className="gov-stat-grid">
+          <button
+            type="button"
+            className="gov-stat-card"
+            onClick={() => {
+              setStockFilter('all');
+              setOfficialShopSearch('');
+              setOfficialFeedback(`Showing all ${shops.length} shops.`);
+              scrollToSection('official-shops');
+            }}
+          >
+            <span className="gov-stat-label">Total shops</span>
+            <span className="gov-stat-number">{shops.length}</span>
+            <span className="gov-stat-hint">View shop records →</span>
+          </button>
+
+          <button
+            type="button"
+            className="gov-stat-card gov-stat-card--dark"
+            onClick={() => {
+              setOfficialFeedback(
+                `Total stock: ${totalStockKg.toLocaleString('en-IN')} kg of grains, sugar and dal, plus ${totalOilLitres.toLocaleString('en-IN')} litres of oil.`
+              );
+              scrollToSection('official-monitoring');
+            }}
+          >
+            <span className="gov-stat-label">Total stock (kg)</span>
+            <span className="gov-stat-number">{totalStockKg.toLocaleString('en-IN')}</span>
+            <span className="gov-stat-hint">
+              + {totalOilLitres.toLocaleString('en-IN')} litres oil · View monitoring →
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className="gov-stat-card"
+            onClick={() => {
+              setStockFilter('low');
+              setOfficialFeedback(`Showing shops with low-stock items (${lowStockItems} items below 20).`);
+              scrollToSection('official-shops');
+            }}
+          >
+            <span className="gov-stat-label">Low-stock items</span>
+            <span className="gov-stat-number">{lowStockItems}</span>
+            <span className="gov-stat-hint">Investigate shortages →</span>
+          </button>
+
+          <button
+            type="button"
+            className="gov-stat-card"
+            onClick={() => {
+              setStockFilter('out');
+              setOfficialFeedback(`Showing shops with out-of-stock items (${outOfStockItems} items).`);
+              scrollToSection('official-shops');
+            }}
+          >
+            <span className="gov-stat-label">Out-of-stock items</span>
+            <span className="gov-stat-number">{outOfStockItems}</span>
+            <span className="gov-stat-hint">Review unavailable items →</span>
+          </button>
         </div>
-        <section style={{ ...cardStyle, marginTop: 24 }}>
+        {officialFeedback && (
+          <p className="gov-feedback" role="status" aria-live="polite">{officialFeedback}</p>
+        )}
+        <section id="official-monitoring" className="gov-panel" style={{ ...cardStyle, marginTop: 24 }}>
           <h2>Shortage Signals & Ration Issued</h2>
           <p>Monitor stock shortages and actual ration distribution across shops.</p>
 
@@ -1474,7 +1606,29 @@ function App() {
             </p>
           )}
 
-          {officialComplaints.map((complaint) => (
+          <label htmlFor="complaint-status-filter" style={{ display: 'block', marginTop: 16 }}>
+            Filter by status
+          </label>
+          <select
+            id="complaint-status-filter"
+            style={inputStyle}
+            value={complaintStatusFilter}
+            onChange={(event) => setComplaintStatusFilter(event.target.value)}
+          >
+            <option>All</option>
+            <option>Pending</option>
+            <option>Under Review</option>
+            <option>Action Taken</option>
+            <option>Resolved</option>
+            <option>Rejected</option>
+          </select>
+          {officialComplaints.length > 0 && (
+            <p role="status">
+              Showing {officialComplaints.filter((complaint) => complaintStatusFilter === 'All' || complaint.status === complaintStatusFilter).length} of {officialComplaints.length} complaints.
+            </p>
+          )}
+
+          {officialComplaints.filter((complaint) => complaintStatusFilter === 'All' || complaint.status === complaintStatusFilter).map((complaint) => (
             <OfficialComplaintCard
               key={complaint.complaint_code}
               complaint={complaint}
@@ -1487,129 +1641,95 @@ function App() {
           ))}
         </section>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 20, marginTop: 24 }}>
-          {shops.map((shop) => (
-            <section key={shop.id} style={cardStyle}>
-              <h2>{shop.name}</h2><p>{shop.village}</p>
-              <ul>{shop.stock.map((item) => <li key={item.name}>{item.name}: {item.quantity} {getUnit(item.name)} — {getStockStatus(item.quantity)}</li>)}</ul>
-            </section>
-          ))}
-        </div>
-        <section className="complaint-card" style={{ ...cardStyle, marginTop: 16 }}>
-          <h2>📝 Raise a Complaint</h2>
-          <p>
-            Report ration distribution problems to the government grievance team.
-            Keep your tracking ID to follow up.
-          </p>
+        <div id="official-shops" className="gov-panel">
+          <h2>Shop Records</h2>
+          <p>Search shops and filter by stock level. Click a statistic above to apply a filter.</p>
 
-          <label htmlFor="complaint-shop">Select ration shop</label>
-          <select
-            id="complaint-shop"
+          <label htmlFor="official-shop-search">Search by shop name, village or code</label>
+          <input
+            id="official-shop-search"
             style={inputStyle}
-            value={complaintShop}
-            onChange={(event) => setComplaintShop(event.target.value)}
-          >
-            {shops.map((shop) => (
-              <option key={shop.id} value={shop.id}>
-                {shop.name} — {shop.village}
-              </option>
-            ))}
-          </select>
-
-          <label htmlFor="complaint-category">Complaint category</label>
-          <select
-            id="complaint-category"
-            style={inputStyle}
-            value={complaintCategory}
-            onChange={(event) => setComplaintCategory(event.target.value)}
-          >
-            <option>Ration not provided</option>
-            <option>Incorrect quantity</option>
-            <option>Overcharging</option>
-            <option>Dealer misconduct</option>
-            <option>Stock unavailable</option>
-            <option>Other</option>
-          </select>
-
-          <label htmlFor="complaint-description">
-            Describe your problem
-          </label>
-          <textarea
-            id="complaint-description"
-            style={{ ...inputStyle, minHeight: 110, resize: 'vertical' }}
-            maxLength={2000}
-            placeholder="Explain what happened..."
-            value={complaintDescription}
-            onChange={(event) => setComplaintDescription(event.target.value)}
+            placeholder="Search shops..."
+            value={officialShopSearch}
+            onChange={(event) => setOfficialShopSearch(event.target.value)}
           />
 
-          <button
-            type="button"
-            style={{
-              ...buttonStyle,
-              opacity: complaintSubmitting ? 0.7 : 1,
-            }}
-            disabled={complaintSubmitting}
-            onClick={() => void submitComplaint()}
-          >
-            {complaintSubmitting ? 'Submitting...' : 'Submit Complaint'}
-          </button>
-
-          {complaintMessage && (
-            <p role="status" style={{ overflowWrap: 'anywhere' }}>
-              {complaintMessage}
-            </p>
-          )}
-        </section>
-
-        <section className="complaint-card" style={{ ...cardStyle, marginTop: 12 }}>
-          <h2>📬 My Complaints</h2>
-          <p>Check your complaint tracking IDs and current status.</p>
-
-          <button
-            type="button"
-            style={buttonStyle}
-            disabled={complaintsLoading}
-            onClick={() => void loadMyComplaints()}
-          >
-            {complaintsLoading ? 'Loading...' : 'View My Complaints'}
-          </button>
-
-          {myComplaints.length === 0 ? (
-            <p>
-              {complaintsLoading
-                ? 'Loading complaints...'
-                : 'No complaints loaded yet. Select "View My Complaints" to check.'}
-            </p>
-          ) : (
-            myComplaints.map((complaint) => (
-              <div
-                key={complaint.complaint_code}
-                style={{
-                  borderTop: '1px solid #e2e8f0',
-                  padding: '14px 0',
-                  overflowWrap: 'anywhere',
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+            {([
+              ['all', 'All shops'],
+              ['low', 'Low stock'],
+              ['out', 'Out of stock'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={`gov-chip${stockFilter === value ? ' gov-chip--active' : ''}`}
+                aria-pressed={stockFilter === value}
+                onClick={() => {
+                  setStockFilter(value);
+                  setOfficialFeedback('');
                 }}
               >
-                <h3>{complaint.complaint_code}</h3>
-                <p><strong>Shop:</strong> {complaint.shop_code}</p>
-                <p><strong>Category:</strong> {complaint.category}</p>
-                <p><strong>Description:</strong> {complaint.description}</p>
-                <p>
-                  <strong>Status:</strong>{' '}
-                  <span style={{ color: '#176b45' }}>
-                    {complaint.status}
-                  </span>
-                </p>
-                <p>
-                  <strong>Official remarks:</strong>{' '}
-                  {complaint.official_remarks || 'No response yet.'}
-                </p>
-              </div>
-            ))
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <p role="status" aria-live="polite">
+            Showing {officialVisibleShops.length} of {shops.length} shops
+          </p>
+
+          {officialVisibleShops.length === 0 && <p>No shops match the current search and filter.</p>}
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(270px, 1fr))', gap: 20, marginTop: 12 }}>
+            {officialVisibleShops.map((shop) => (
+              <section key={shop.id} style={cardStyle}>
+                <h2>{shop.name}</h2><p>{shop.village} · {shop.id}</p>
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                  {shop.stock.filter((item) => stockFilterMatches(item.quantity)).map((item) => {
+                    const status = getStockStatus(item.quantity);
+                    const badge = status === 'In stock' ? 'gov-badge--good' : status === 'Low stock' ? 'gov-badge--warning' : 'gov-badge--danger';
+                    return (
+                      <li key={item.name} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 0', borderTop: '1px solid #f4e4eb' }}>
+                        <span>{item.name}: <strong>{item.quantity} {getUnit(item.name)}</strong></span>
+                        <span className={`gov-badge ${badge}`}>{status}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+          </div>
+        </div>
+
+        <section
+          style={{
+            ...cardStyle,
+            marginTop: 24,
+            border: '1px solid #fecaca',
+          }}
+        >
+          <h2>Developer Tools</h2>
+          <p>
+            Clear test token bookings so you can test the booking flow
+            from the beginning. Shop stock and user accounts are preserved.
+          </p>
+
+          <button
+            type="button"
+            style={{ ...buttonStyle, background: '#b91c1c' }}
+            disabled={resettingTokens}
+            onClick={() => void resetTestTokens()}
+          >
+            {resettingTokens ? 'Resetting tokens...' : 'Reset Test Tokens'}
+          </button>
+
+          {resetTokensMessage && (
+            <p role="status" aria-live="polite">
+              {resetTokensMessage}
+            </p>
           )}
         </section>
-
 
         <p style={{ color: '#64748b', fontSize: 13, marginTop: 24 }}>Demo data only. Not an official government service.</p>
       </main>
@@ -1793,6 +1913,122 @@ function App() {
           <h2>Notifications</h2>
           {notifications.length === 0 ? <p>No notifications yet.</p> : <ul>{notifications.map((message, index) => <li key={`${message}-${index}`}>{message}</li>)}</ul>}
         </section>
+
+        <section className="complaint-card" style={{ ...cardStyle, marginTop: 16 }}>
+          <h2>📝 Raise a Complaint</h2>
+          <p>
+            Report ration distribution problems to the government grievance team.
+            Keep your tracking ID to follow up.
+          </p>
+
+          <label htmlFor="complaint-shop">Select ration shop</label>
+          <select
+            id="complaint-shop"
+            style={inputStyle}
+            value={complaintShop}
+            onChange={(event) => setComplaintShop(event.target.value)}
+          >
+            {shops.map((shop) => (
+              <option key={shop.id} value={shop.id}>
+                {shop.name} — {shop.village}
+              </option>
+            ))}
+          </select>
+
+          <label htmlFor="complaint-category">Complaint category</label>
+          <select
+            id="complaint-category"
+            style={inputStyle}
+            value={complaintCategory}
+            onChange={(event) => setComplaintCategory(event.target.value)}
+          >
+            <option>Ration not provided</option>
+            <option>Incorrect quantity</option>
+            <option>Overcharging</option>
+            <option>Dealer misconduct</option>
+            <option>Stock unavailable</option>
+            <option>Other</option>
+          </select>
+
+          <label htmlFor="complaint-description">
+            Describe your problem
+          </label>
+          <textarea
+            id="complaint-description"
+            style={{ ...inputStyle, minHeight: 110, resize: 'vertical' }}
+            maxLength={2000}
+            placeholder="Explain what happened..."
+            value={complaintDescription}
+            onChange={(event) => setComplaintDescription(event.target.value)}
+          />
+
+          <button
+            type="button"
+            style={{
+              ...buttonStyle,
+              opacity: complaintSubmitting ? 0.7 : 1,
+            }}
+            disabled={complaintSubmitting}
+            onClick={() => void submitComplaint()}
+          >
+            {complaintSubmitting ? 'Submitting...' : 'Submit Complaint'}
+          </button>
+
+          {complaintMessage && (
+            <p role="status" style={{ overflowWrap: 'anywhere' }}>
+              {complaintMessage}
+            </p>
+          )}
+        </section>
+
+        <section className="complaint-card" style={{ ...cardStyle, marginTop: 12 }}>
+          <h2>📬 My Complaints</h2>
+          <p>Check your complaint tracking IDs and current status.</p>
+
+          <button
+            type="button"
+            style={buttonStyle}
+            disabled={complaintsLoading}
+            onClick={() => void loadMyComplaints()}
+          >
+            {complaintsLoading ? 'Loading...' : 'View My Complaints'}
+          </button>
+
+          {myComplaints.length === 0 ? (
+            <p>
+              {complaintsLoading
+                ? 'Loading complaints...'
+                : 'No complaints loaded yet. Select "View My Complaints" to check.'}
+            </p>
+          ) : (
+            myComplaints.map((complaint) => (
+              <div
+                key={complaint.complaint_code}
+                style={{
+                  borderTop: '1px solid #e2e8f0',
+                  padding: '14px 0',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                <h3>{complaint.complaint_code}</h3>
+                <p><strong>Shop:</strong> {complaint.shop_code}</p>
+                <p><strong>Category:</strong> {complaint.category}</p>
+                <p><strong>Description:</strong> {complaint.description}</p>
+                <p>
+                  <strong>Status:</strong>{' '}
+                  <span style={{ color: '#176b45' }}>
+                    {complaint.status}
+                  </span>
+                </p>
+                <p>
+                  <strong>Official remarks:</strong>{' '}
+                  {complaint.official_remarks || 'No response yet.'}
+                </p>
+              </div>
+            ))
+          )}
+        </section>
+
         <p style={{ color: '#64748b', fontSize: 13, marginTop: 24 }}>Demo data only. Not an official government service.</p>
       </main>
     );
