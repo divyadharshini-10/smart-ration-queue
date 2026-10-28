@@ -152,16 +152,6 @@ function App() {
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   const [selectedFamilyMemberId, setSelectedFamilyMemberId] = useState('');
   const [familyMembersLoading, setFamilyMembersLoading] = useState(false);
-  const [consumerFamilyMembers, setConsumerFamilyMembers] =
-    useState<FamilyMember[]>([]);
-  const [consumerSelectedMemberId, setConsumerSelectedMemberId] =
-    useState('');
-
-  void familyMembers;
-  void selectedFamilyMemberId;
-  void familyMembersLoading;
-  void consumerFamilyMembers;
-  void consumerSelectedMemberId;
 
   const today = new Date().toLocaleDateString('en-CA');
 
@@ -471,37 +461,6 @@ function App() {
     return () => { cancelled = true; };
   }, []);
 
-  async function loadConsumerFamilyMembers() {
-    setConsumerFamilyMembers([]);
-    setConsumerSelectedMemberId('');
-
-    try {
-      const { data, error } = await supabase.rpc(
-        'demo_get_consumer_family_members',
-        {
-          p_phone: consumerPhone.trim(),
-          p_ration_card: rationCardNumber.trim(),
-          p_otp: '123456',
-        }
-      );
-
-      if (error) throw error;
-
-      setConsumerFamilyMembers(
-        Array.isArray(data) ? (data as FamilyMember[]) : []
-      );
-    } catch (error) {
-      console.error('Could not load consumer family members:', error);
-      setLoginMessage(
-        error instanceof Error
-          ? `Family members could not be loaded: ${error.message}`
-          : 'Family members could not be loaded.'
-      );
-    }
-  }
-
-  void loadConsumerFamilyMembers;
-
   async function loginConsumerWithDummyOtp() {
     const phone = consumerPhone.trim();
     const rationCard = rationCardNumber.trim();
@@ -540,7 +499,6 @@ function App() {
 
       setConsumerIdentity(identity);
       setActiveToken(savedToken);
-      setConsumerSelectedMemberId('');
       setNotifications([]);
 
       setSearch('');
@@ -628,8 +586,6 @@ function App() {
     setStockSaveMessage('');
     setLoginMessage('');
     setStockDrafts({});
-    setConsumerFamilyMembers([]);
-    setConsumerSelectedMemberId('');
   }
 
   function updateStock(shopId: string, itemName: string, value: string) {
@@ -721,6 +677,13 @@ function App() {
       return;
     }
 
+    if (!selectedFamilyMemberId) {
+      setDistributionMessage(
+        'Please select the family member collecting the ration.'
+      );
+      return;
+    }
+
     const items = Object.entries(distributionItems)
       .filter(([, value]) => value.trim() !== '')
       .map(([item_name, value]) => ({
@@ -760,8 +723,11 @@ function App() {
         preview_only: true,
         receipt_code: `SAMPLE-${new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14)}`,
         token_code: scannedTokenCode,
-        collected_by_member_id: null,
-        collected_by_member_name: 'Consumer',
+        collected_by_member_id: selectedFamilyMemberId,
+        collected_by_member_name:
+          familyMembers.find(
+            (member) => member.id === selectedFamilyMemberId
+          )?.full_name ?? 'Demo family member',
         payment_method: paymentMethod,
         payment_status: 'sample_only',
         total_amount: total,
@@ -783,7 +749,7 @@ function App() {
           p_token_code: scannedTokenCode,
           p_items: items,
           p_payment_method: paymentMethod,
-          p_collected_by_member_id: null,
+          p_collected_by_member_id: selectedFamilyMemberId,
         }
       );
 
@@ -1158,6 +1124,41 @@ function App() {
               <p>Verified token: <strong>{scannedTokenCode}</strong></p>
               <p>Enter only the quantities actually handed to the consumer.</p>
 
+              <div style={{ marginBottom: 20 }}>
+                <label htmlFor="collector-member">
+                  <strong>Family member collecting the ration</strong>
+                </label>
+
+                <select
+                  id="collector-member"
+                  style={inputStyle}
+                  value={selectedFamilyMemberId}
+                  disabled={familyMembersLoading || familyMembers.length === 0}
+                  onChange={(event) =>
+                    setSelectedFamilyMemberId(event.target.value)
+                  }
+                >
+                  <option value="">
+                    {familyMembersLoading
+                      ? 'Loading family members...'
+                      : familyMembers.length === 0
+                        ? 'No family members available'
+                        : 'Select the collecting family member'}
+                  </option>
+
+                  {familyMembers.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.full_name} — {member.relationship}
+                    </option>
+                  ))}
+                </select>
+
+                <p style={{ color: '#64748b', fontSize: 13 }}>
+                  Select the person physically collecting the ration.
+                  Household ration entitlement remains unchanged.
+                </p>
+              </div>
+
               {distributionItemNames.map((item) => {
                 const available =
                   dealerShops[0]?.stock.find((stock) => stock.name === item)?.quantity ?? 0;
@@ -1494,82 +1495,8 @@ function App() {
             </section>
           ))}
         </div>
-        <p style={{ color: '#64748b', fontSize: 13, marginTop: 24 }}>Demo data only. Not an official government service.</p>
-      </main>
-    );
-  }
-
-  if (loggedIn && selectedRole === 'consumer') {
-    return (
-      <main style={pageStyle}>
-        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <div>
-            <h1>Consumer Dashboard</h1>
-            <p>Find ration shops, check stock, and book a token.</p>
-            <p style={{ color: '#64748b', fontSize: 13 }}>{stockMessage}</p>
-          </div>
-          <button style={buttonStyle} onClick={logout}>Log out</button>
-        </header>
-
-        {activeToken && (
-          <section style={{ ...cardStyle, marginTop: 20, background: '#f0fdf4' }}>
-            <h2>Your active token</h2><h1 style={{ color: '#166534' }}>Token No. {activeToken.queueNumber ?? activeToken.number}</h1>
-            <p><strong>Shop:</strong> {activeToken.shopName}</p>
-            <p><strong>Date:</strong> {activeToken.date}</p>
-            <p><strong>Time slot:</strong> {activeToken.slot}</p>
-            <div style={{
-              marginTop: 16,
-              padding: 16,
-              background: '#ffffff',
-              borderRadius: 12
-            }}>
-              <h3>Live Queue Status</h3>
-
-              <p>
-                <strong>Your queue number:</strong>{' '}
-                {activeToken.queueNumber ?? 'Not assigned'}
-              </p>
-
-              <p>
-                <strong>Currently serving:</strong>{' '}
-                {publicQueue.find((item) => item.status === 'serving')
-                  ?.queue_number ?? 'Not started yet'}
-              </p>
-
-              <p>
-                <strong>People ahead:</strong>{' '}
-                {activeToken.queueNumber == null
-                  ? 'Unavailable'
-                  : publicQueue.filter(
-                      (item) =>
-                        item.status === 'waiting' &&
-                        item.queue_number < activeToken.queueNumber!
-                    ).length}
-              </p>
-
-              <p>
-                <strong>Your status:</strong>{' '}
-                {activeToken.status ?? 'waiting'}
-              </p>
-
-              <p style={{ color: '#64748b', fontSize: 13 }}>
-                Queue updates automatically every 5 seconds.
-              </p>
-
-              {queueMessage && (
-                <p style={{ color: '#b91c1c' }}>{queueMessage}</p>
-              )}
-            </div>
-            <div style={{ marginTop: 16, padding: 16, background: '#ffffff', borderRadius: 12, display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-              <QRCodeSVG value={activeToken.number} size={180} level="M" includeMargin />
-              <strong>Scan to verify token</strong>
-              <span style={{ color: '#64748b', fontSize: 12 }}>Show this QR code to the ration dealer.</span>
-            </div>
-          </section>
-        )}
-
-        <section style={{ ...cardStyle, marginTop: 20 }}>
-          <h2>Raise a Complaint</h2>
+        <section className="complaint-card" style={{ ...cardStyle, marginTop: 16 }}>
+          <h2>📝 Raise a Complaint</h2>
           <p>
             Report ration distribution problems to the government grievance team.
             Keep your tracking ID to follow up.
@@ -1635,8 +1562,8 @@ function App() {
           )}
         </section>
 
-        <section style={{ ...cardStyle, marginTop: 20 }}>
-          <h2>My Complaints</h2>
+        <section className="complaint-card" style={{ ...cardStyle, marginTop: 12 }}>
+          <h2>📬 My Complaints</h2>
           <p>Check your complaint tracking IDs and current status.</p>
 
           <button
@@ -1682,6 +1609,131 @@ function App() {
             ))
           )}
         </section>
+
+
+        <p style={{ color: '#64748b', fontSize: 13, marginTop: 24 }}>Demo data only. Not an official government service.</p>
+      </main>
+    );
+  }
+
+  if (loggedIn && selectedRole === 'consumer') {
+    return (
+      <main className="consumer-dashboard" style={pageStyle}>
+        <style>{`
+          .consumer-dashboard {
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            color: #17352c;
+            max-width: 1180px !important;
+            padding: 28px 22px 36px !important;
+            background: linear-gradient(180deg, #f1fbf5 0%, #f8fbff 44%, #f8fafc 100%);
+            min-height: 100vh;
+          }
+          .consumer-dashboard h1, .consumer-dashboard h2, .consumer-dashboard h3 { letter-spacing: -0.025em; }
+          .consumer-dashboard > header {
+            background: linear-gradient(120deg, #0b5138 0%, #13845b 58%, #29a878 100%);
+            color: #fff !important; padding: 25px 28px; border-radius: 22px;
+            box-shadow: 0 16px 35px rgba(14, 116, 74, .18); margin-bottom: 22px;
+          }
+          .consumer-dashboard > header h1 { margin: 0 0 8px; font-size: clamp(25px, 3.3vw, 34px); }
+          .consumer-dashboard > header p { color: #e0f7e9 !important; margin: 5px 0; }
+          .consumer-dashboard > header button { background: #fff !important; color: #116344 !important; border-radius: 999px !important; padding: 11px 19px !important; }
+          .consumer-dashboard section:not(.complaint-card) {
+            border-radius: 18px !important; border-color: #e0eee6 !important;
+            box-shadow: 0 8px 24px rgba(19, 68, 48, .055) !important;
+            transition: transform .18s ease, box-shadow .18s ease;
+          }
+          .consumer-dashboard section:not(.complaint-card):hover { box-shadow: 0 12px 28px rgba(19, 68, 48, .09) !important; }
+          .consumer-dashboard button { transition: transform .15s ease, filter .15s ease; }
+          .consumer-dashboard button:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
+          .consumer-dashboard input, .consumer-dashboard select, .consumer-dashboard textarea {
+            border-radius: 11px !important; border-color: #cbded3 !important; font: inherit;
+          }
+          .consumer-dashboard input:focus, .consumer-dashboard select:focus, .consumer-dashboard textarea:focus {
+            outline: 3px solid rgba(34, 160, 105, .15); border-color: #219568 !important;
+          }
+          .consumer-dashboard .complaint-card {
+            padding: 16px 18px !important; border-radius: 16px !important;
+            border: 1px solid #dce9f0 !important; background: #fff !important;
+            box-shadow: 0 5px 18px rgba(31, 66, 90, .045) !important;
+          }
+          .consumer-dashboard .complaint-card h2 { font-size: 20px; margin: 0 0 8px; }
+          .consumer-dashboard .complaint-card p { margin: 7px 0; font-size: 14px; line-height: 1.5; }
+          .consumer-dashboard .complaint-card label { font-size: 13px; font-weight: 650; color: #34574a; }
+          .consumer-dashboard .complaint-card textarea { min-height: 78px !important; }
+          .consumer-dashboard .complaint-card input, .consumer-dashboard .complaint-card select,
+          .consumer-dashboard .complaint-card textarea { margin-bottom: 8px !important; padding: 9px 11px !important; }
+          .consumer-dashboard .complaint-card button { padding: 9px 14px !important; border-radius: 10px !important; }
+          @media (max-width: 640px) {
+            .consumer-dashboard { padding: 14px 12px 24px !important; }
+            .consumer-dashboard > header { padding: 20px 17px; border-radius: 17px; }
+            .consumer-dashboard .complaint-card { padding: 14px !important; }
+          }
+        `}</style>
+        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h1>Consumer Dashboard</h1>
+            <p>Find ration shops, check stock, and book a token.</p>
+            <p style={{ color: '#64748b', fontSize: 13 }}>{stockMessage}</p>
+          </div>
+          <button style={buttonStyle} onClick={logout}>Log out</button>
+        </header>
+
+        {activeToken && (
+          <section style={{ ...cardStyle, marginTop: 20, background: '#f0fdf4' }}>
+            <h2>Your active token</h2><h1 style={{ color: '#166534' }}>{activeToken.number}</h1>
+            <p><strong>Shop:</strong> {activeToken.shopName}</p>
+            <p><strong>Date:</strong> {activeToken.date}</p>
+            <p><strong>Time slot:</strong> {activeToken.slot}</p>
+            <div style={{
+              marginTop: 16,
+              padding: 16,
+              background: '#ffffff',
+              borderRadius: 12
+            }}>
+              <h3>Live Queue Status</h3>
+
+              <p>
+                <strong>Your queue number:</strong>{' '}
+                {activeToken.queueNumber ?? 'Not assigned'}
+              </p>
+
+              <p>
+                <strong>Currently serving:</strong>{' '}
+                {publicQueue.find((item) => item.status === 'serving')
+                  ?.queue_number ?? 'Not started yet'}
+              </p>
+
+              <p>
+                <strong>People ahead:</strong>{' '}
+                {activeToken.queueNumber == null
+                  ? 'Unavailable'
+                  : publicQueue.filter(
+                      (item) =>
+                        item.status === 'waiting' &&
+                        item.queue_number < activeToken.queueNumber!
+                    ).length}
+              </p>
+
+              <p>
+                <strong>Your status:</strong>{' '}
+                {activeToken.status ?? 'waiting'}
+              </p>
+
+              <p style={{ color: '#64748b', fontSize: 13 }}>
+                Queue updates automatically every 5 seconds.
+              </p>
+
+              {queueMessage && (
+                <p style={{ color: '#b91c1c' }}>{queueMessage}</p>
+              )}
+            </div>
+            <div style={{ marginTop: 16, padding: 16, background: '#ffffff', borderRadius: 12, display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+              <QRCodeSVG value={activeToken.number} size={180} level="M" includeMargin />
+              <strong>Scan to verify token</strong>
+              <span style={{ color: '#64748b', fontSize: 12 }}>Show this QR code to the ration dealer.</span>
+            </div>
+          </section>
+        )}
 
         <section style={{ ...cardStyle, marginTop: 20 }}>
           <h2>Find a ration shop</h2>
@@ -1784,14 +1836,14 @@ function App() {
           <h2>{selectedRole === 'consumer' ? 'Consumer Login' : selectedRole === 'dealer' ? 'Ration Dealer Login' : 'Government Official Login'}</h2>
           {selectedRole === 'consumer' ? (
             <>
-              <p style={{ color: '#64748b' }}>Demo login only — no SMS or Twilio is used. Use demo phone 0987654321, ration card 4321, and OTP 123456.</p>
+              <p style={{ color: '#64748b' }}>Demo login only — no SMS or Twilio is used. Use OTP 123456.</p>
               <form onSubmit={(event) => { event.preventDefault(); loginConsumerWithDummyOtp(); }}>
                 <label htmlFor="consumer-phone">10-digit phone number</label>
-                <input id="consumer-phone" type="tel" inputMode="numeric" autoComplete="tel-national" required maxLength={10} pattern="[0-9]{10}" style={inputStyle} placeholder="0987654321" value={consumerPhone} onChange={(event) => setConsumerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} />
+                <input id="consumer-phone" type="tel" inputMode="numeric" autoComplete="tel-national" required maxLength={10} pattern="[0-9]{10}" style={inputStyle} placeholder="Enter phone number" value={consumerPhone} onChange={(event) => setConsumerPhone(event.target.value.replace(/\D/g, '').slice(0, 10))} />
                 <label htmlFor="ration-card">Ration card number</label>
-                <input id="ration-card" required style={inputStyle} placeholder="4321" value={rationCardNumber} onChange={(event) => setRationCardNumber(event.target.value)} />
+                <input id="ration-card" required style={inputStyle} placeholder="Enter ration card number" value={rationCardNumber} onChange={(event) => setRationCardNumber(event.target.value)} />
                 <label htmlFor="consumer-otp">Demo OTP</label>
-                <input id="consumer-otp" inputMode="numeric" required maxLength={6} style={inputStyle} placeholder="123456" value={consumerOtp} onChange={(event) => setConsumerOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} />
+                <input id="consumer-otp" inputMode="numeric" required maxLength={6} style={inputStyle} placeholder="Enter 123456" value={consumerOtp} onChange={(event) => setConsumerOtp(event.target.value.replace(/\D/g, '').slice(0, 6))} />
                 <button type="submit" style={{ ...buttonStyle, width: '100%' }}>Open consumer dashboard</button>
               </form>
             </>
@@ -1812,7 +1864,7 @@ function App() {
           {loginMessage && <p role="status" style={{ color: '#b91c1c', marginTop: 12 }}>{loginMessage}</p>}
           <button type="button" style={{ ...buttonStyle, background: '#64748b', width: '100%', marginTop: 12 }} onClick={() => { setSelectedRole(null); setPassword(''); setConsumerOtp(''); setLoginMessage(''); }}>Back</button>
           <p style={{ color: '#64748b', fontSize: 12, marginTop: 16 }}>
-            {selectedRole === 'consumer' ? 'Demo credentials: phone 0987654321, ration card 4321, OTP 123456.' : 'Use a registered Supabase account. Access depends on the role assigned to that account in the database.'}
+            {selectedRole === 'consumer' ? 'Demo login only: use OTP 123456. Consumer tokens are stored through Supabase for this demo.' : 'Use a registered Supabase account. Access depends on the role assigned to that account in the database.'}
           </p>
         </section>
       )}
