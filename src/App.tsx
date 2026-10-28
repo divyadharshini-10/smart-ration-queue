@@ -15,7 +15,20 @@ type Shop = {
   crowd: string;
   stock: StockItem[];
 };
-type Token = { number: string; shopName: string; date: string; slot: string };
+type Token = {
+  number: string;
+  queueNumber: number | null;
+  shopName: string;
+  shopCode: string;
+  date: string;
+  slot: string;
+  status: string;
+};
+
+type QueueEntry = {
+  queue_number: number;
+  status: string;
+};
 type FamilyMember = {
   id: string;
   full_name: string;
@@ -105,6 +118,8 @@ function App() {
   const [monitoringMessage, setMonitoringMessage] = useState('');
   const [monitoringLoading, setMonitoringLoading] = useState(false);
   const [activeToken, setActiveToken] = useState<Token | null>(null);
+  const [publicQueue, setPublicQueue] = useState<QueueEntry[]>([]);
+  const [queueMessage, setQueueMessage] = useState('');
   const [showBooking, setShowBooking] = useState(false);
   const [bookingShop, setBookingShop] = useState('SHOP001');
   const [bookingDate, setBookingDate] = useState('');
@@ -256,6 +271,45 @@ function App() {
   useEffect(() => {
     localStorage.setItem('ration-shops', JSON.stringify(shops));
   }, [shops]);
+
+  // Refresh the public queue every 5 seconds.
+  useEffect(() => {
+    if (!activeToken?.shopCode || !activeToken.date || !activeToken.slot) {
+      setPublicQueue([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function refreshQueue() {
+      const { data, error } = await supabase.rpc('get_public_ration_queue', {
+        p_shop_code: activeToken!.shopCode,
+        p_token_date: activeToken!.date,
+        p_time_slot: activeToken!.slot,
+      });
+
+      if (cancelled) return;
+
+      if (error) {
+        setQueueMessage('Unable to refresh the queue. Please try again.');
+        return;
+      }
+
+      setPublicQueue((data ?? []) as QueueEntry[]);
+      setQueueMessage('');
+    }
+
+    void refreshQueue();
+
+    const intervalId = window.setInterval(() => {
+      void refreshQueue();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeToken?.shopCode, activeToken?.date, activeToken?.slot]);
 
   async function loadTokenFamilyMembers(tokenCode: string) {
     console.log('[Family] Loading started:', tokenCode);
@@ -557,6 +611,8 @@ function App() {
     setAssignedShopCode(null);
     setConsumerIdentity(null);
     setActiveToken(null);
+    setPublicQueue([]);
+    setQueueMessage('');
     setConsumerPhone('');
     setRationCardNumber('');
     setConsumerOtp('');
@@ -811,9 +867,12 @@ function App() {
 
       const token: Token = {
         number: data.token.number,
+        queueNumber: data.token.queueNumber ?? null,
         shopName: data.token.shopName,
+        shopCode: data.token.shopCode ?? bookingShop,
         date: data.token.date,
         slot: data.token.slot,
+        status: data.token.status ?? 'waiting',
       };
 
       setActiveToken(token);
@@ -1513,6 +1572,49 @@ function App() {
             <p><strong>Shop:</strong> {activeToken.shopName}</p>
             <p><strong>Date:</strong> {activeToken.date}</p>
             <p><strong>Time slot:</strong> {activeToken.slot}</p>
+            <div style={{
+              marginTop: 16,
+              padding: 16,
+              background: '#ffffff',
+              borderRadius: 12
+            }}>
+              <h3>Live Queue Status</h3>
+
+              <p>
+                <strong>Your queue number:</strong>{' '}
+                {activeToken.queueNumber ?? 'Not assigned'}
+              </p>
+
+              <p>
+                <strong>Currently serving:</strong>{' '}
+                {publicQueue.find((item) => item.status === 'serving')
+                  ?.queue_number ?? 'Not started yet'}
+              </p>
+
+              <p>
+                <strong>People ahead:</strong>{' '}
+                {activeToken.queueNumber == null
+                  ? 'Unavailable'
+                  : publicQueue.filter(
+                      (item) =>
+                        item.status === 'waiting' &&
+                        item.queue_number < activeToken.queueNumber!
+                    ).length}
+              </p>
+
+              <p>
+                <strong>Your status:</strong>{' '}
+                {activeToken.status ?? 'waiting'}
+              </p>
+
+              <p style={{ color: '#64748b', fontSize: 13 }}>
+                Queue updates automatically every 5 seconds.
+              </p>
+
+              {queueMessage && (
+                <p style={{ color: '#b91c1c' }}>{queueMessage}</p>
+              )}
+            </div>
             <div style={{ marginTop: 16, padding: 16, background: '#ffffff', borderRadius: 12, display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
               <QRCodeSVG value={activeToken.number} size={180} level="M" includeMargin />
               <strong>Scan to verify token</strong>
