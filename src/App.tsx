@@ -785,11 +785,21 @@ function App() {
 
       await loadStock();
       setScannerOpen(true);
-    } catch (error) {
-      setDistributionMessage(
+    } catch (error: unknown) {
+      console.error('Distribution failed:', error);
+
+      const message =
         error instanceof Error
-          ? `Distribution failed: ${error.message}`
-          : 'Distribution failed. Please try again.'
+          ? error.message
+          : typeof error === 'object' &&
+              error !== null &&
+              'message' in error &&
+              typeof error.message === 'string'
+            ? error.message
+            : JSON.stringify(error);
+
+      setDistributionMessage(
+        `Distribution failed: ${message || 'Unknown error'}`
       );
     } finally {
       setDistributionSubmitting(false);
