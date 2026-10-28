@@ -1042,7 +1042,7 @@ function App() {
 
   async function resetTestTokens() {
     const confirmed = window.confirm(
-      'Delete ALL ration token records? Accounts, shops, stock, complaints, and receipts will not be intentionally deleted. This cannot be undone.'
+      'Delete ALL test tokens, receipts, issued history and monthly usage? User accounts, shops and stock quantities are kept. This cannot be undone.'
     );
 
     if (!confirmed) return;
@@ -1051,25 +1051,30 @@ function App() {
     setResetTokensMessage('');
 
     try {
-      const { data, error } = await supabase.rpc(
-        'reset_test_ration_tokens'
-      );
+      const { data, error } = await supabase.rpc('reset_demo_tokens');
 
       if (error) throw error;
 
       setResetTokensMessage(
-        `Reset successful. ${data ?? 0} token record(s) deleted.`
+        data?.message ?? 'All test tokens have been reset.'
       );
 
       setActiveToken(null);
       await loadRationMonitoring();
     } catch (error) {
       console.error('Token reset failed:', error);
-      setResetTokensMessage(
+
+      const message =
         error instanceof Error
-          ? `Reset failed: ${error.message}`
-          : 'Reset failed. Please try again.'
-      );
+          ? error.message
+          : typeof error === 'object' &&
+              error !== null &&
+              'message' in error &&
+              typeof error.message === 'string'
+            ? error.message
+            : JSON.stringify(error);
+
+      setResetTokensMessage(`Reset failed: ${message || 'Unknown error'}`);
     } finally {
       setResettingTokens(false);
     }
@@ -1721,8 +1726,9 @@ function App() {
         >
           <h2>Developer Tools</h2>
           <p>
-            Clear test token bookings so you can test the booking flow
-            from the beginning. Shop stock and user accounts are preserved.
+            Clear test tokens, receipts, issued history and monthly usage so
+            you can test the booking and distribution flow from the beginning.
+            Shop stock and user accounts are preserved.
           </p>
 
           <button
