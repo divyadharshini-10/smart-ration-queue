@@ -137,6 +137,10 @@ function App() {
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   const [selectedFamilyMemberId, setSelectedFamilyMemberId] = useState('');
   const [familyMembersLoading, setFamilyMembersLoading] = useState(false);
+  const [consumerFamilyMembers, setConsumerFamilyMembers] =
+    useState<FamilyMember[]>([]);
+  const [consumerSelectedMemberId, setConsumerSelectedMemberId] =
+    useState('');
 
   const today = new Date().toLocaleDateString('en-CA');
 
@@ -407,6 +411,35 @@ function App() {
     return () => { cancelled = true; };
   }, []);
 
+  async function loadConsumerFamilyMembers() {
+    setConsumerFamilyMembers([]);
+    setConsumerSelectedMemberId('');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'demo_get_consumer_family_members',
+        {
+          p_phone: consumerPhone.trim(),
+          p_ration_card: rationCardNumber.trim(),
+          p_otp: '123456',
+        }
+      );
+
+      if (error) throw error;
+
+      setConsumerFamilyMembers(
+        Array.isArray(data) ? (data as FamilyMember[]) : []
+      );
+    } catch (error) {
+      console.error('Could not load consumer family members:', error);
+      setLoginMessage(
+        error instanceof Error
+          ? `Family members could not be loaded: ${error.message}`
+          : 'Family members could not be loaded.'
+      );
+    }
+  }
+
   async function loginConsumerWithDummyOtp() {
     const phone = consumerPhone.trim();
     const rationCard = rationCardNumber.trim();
@@ -445,7 +478,11 @@ function App() {
 
       setConsumerIdentity(identity);
       setActiveToken(savedToken);
+      setConsumerSelectedMemberId('');
       setNotifications([]);
+
+      await loadConsumerFamilyMembers();
+
       setSearch('');
       setLoggedIn(true);
       setLoginMessage(
@@ -529,6 +566,8 @@ function App() {
     setStockSaveMessage('');
     setLoginMessage('');
     setStockDrafts({});
+    setConsumerFamilyMembers([]);
+    setConsumerSelectedMemberId('');
   }
 
   function updateStock(shopId: string, itemName: string, value: string) {
@@ -726,6 +765,11 @@ function App() {
   }
 
   async function bookToken() {
+    if (!consumerSelectedMemberId) {
+      setBookingMessage('Please select a family member.');
+      return;
+    }
+
     if (!bookingDate || bookingDate < today) {
       setBookingMessage('Please choose today or a future date.');
       return;
@@ -755,6 +799,7 @@ function App() {
           p_shop_code: bookingShop,
           p_token_date: bookingDate,
           p_time_slot: bookingSlot,
+          p_family_member_id: consumerSelectedMemberId,
         }
       );
 
@@ -1628,6 +1673,33 @@ function App() {
               <label htmlFor="booking-shop">Select shop</label>
               <select id="booking-shop" style={inputStyle} value={bookingShop} onChange={(event) => setBookingShop(event.target.value)}>
                 {shops.map((shop) => <option key={shop.id} value={shop.id}>{shop.name} — {shop.village}</option>)}
+              </select>
+              <label htmlFor="booking-family-member">
+                Select family member
+              </label>
+
+              <select
+                id="booking-family-member"
+                value={consumerSelectedMemberId}
+                onChange={(e) =>
+                  setConsumerSelectedMemberId(e.target.value)
+                }
+                required
+                style={{
+                  width: '100%',
+                  padding: '12px',
+                  marginBottom: '16px',
+                  borderRadius: '8px',
+                  border: '1px solid #ccc',
+                }}
+              >
+                <option value="">Choose a family member</option>
+
+                {consumerFamilyMembers.map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.full_name} ({member.relationship})
+                  </option>
+                ))}
               </select>
               <label htmlFor="booking-date">Select date</label>
               <input id="booking-date" type="date" min={today} style={inputStyle} value={bookingDate} onChange={(event) => setBookingDate(event.target.value)} />
